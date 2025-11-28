@@ -23,7 +23,7 @@ import 'screen/about_screen.dart';
 import 'util/logger.dart';
 import 'package:bmsc/screen/settings_screen.dart';
 import 'package:bmsc/theme.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
 
 import 'util/string.dart';
 
@@ -43,8 +43,6 @@ Future<void> main() async {
   }
 
   if (Platform.isLinux || Platform.isWindows) {
-    JustAudioMediaKit.ensureInitialized();
-    sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
 

@@ -44,7 +44,7 @@ class DatabaseManager {
 
   static Future<Database> initDB() async {
     // Initialize FFI for Linux
-    if (Platform.isLinux) {
+    if (Platform.isLinux||Platform.isWindows) {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }

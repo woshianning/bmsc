@@ -32,12 +32,6 @@ final _logger = LoggerUtils.getLogger('main');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  /// ⭐ Windows/Linux 初始化 SQLite FFI（你当前缺少的部分）
-  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-  }
-
   if (Platform.isAndroid) {
     _logger.info('Android version: ${Platform.operatingSystemVersion}');
 
@@ -50,6 +44,8 @@ Future<void> main() async {
 
   if (Platform.isLinux || Platform.isWindows) {
     JustAudioMediaKit.ensureInitialized();
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
   }
 
   await ThemeProvider.instance.init();

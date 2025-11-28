@@ -76,8 +76,9 @@ class LazyAudioSource extends StreamAudioSource {
       throw Exception("Cannot clear cache while download is in progress");
     }
     _response = null;
+    final file = await localFile;
     if (file.existsSync()) await file.delete();
-    
+    final mimeFile = await _mimeFile;
     if (await mimeFile.exists()) await mimeFile.delete();
     _progress = 0;
     _downloadProgressSubject.add(0.0);

@@ -43,7 +43,7 @@ Future<void> main() async {
   }
 
   if (Platform.isLinux || Platform.isWindows) {
-    databaseFactory = databaseFactoryFfi;
+    JustAudioMediaKit.ensureInitialized();
   }
 
   await ThemeProvider.instance.init();

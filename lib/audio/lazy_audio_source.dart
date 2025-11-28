@@ -2,7 +2,9 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-@@ -8,13 +7,7 @@ import 'package:bmsc/database_manager.dart';
+
+import 'package:async/async.dart';
+import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
@@ -16,7 +18,12 @@ import 'package:rxdart/rxdart.dart';
 class LazyAudioSource extends StreamAudioSource {
   Future<HttpClientResponse>? _response;
   final String bvid;
-@@ -27,12 +20,6 @@ class LazyAudioSource extends StreamAudioSource {
+  final int cid;
+  final AsyncMemoizer<Uri> _uriMemoizer = AsyncMemoizer();
+  final Future<File> localFile;
+  int _progress = 0;
+  final bool isLocal;
+  final _requests = <_StreamingByteRangeRequest>[];
   final _downloadProgressSubject = BehaviorSubject<double>();
   bool _downloading = false;
 
@@ -29,7 +36,25 @@ class LazyAudioSource extends StreamAudioSource {
   LazyAudioSource(
     this.bvid,
     this.cid, {
-@@ -58,65 +45,48 @@ class LazyAudioSource extends StreamAudioSource {
+    File? localFile,
+    super.tag,
+  })  : localFile = localFile != null
+            ? Future.value(localFile)
+            : DatabaseManager.prepareFileForCaching(bvid, cid),
+        isLocal = localFile != null {
+    _init();
+  }
+
+  Future<Uri> get uri async {
+    return await _uriMemoizer.runOnce(() async {
+      final service = await BilibiliService.instance;
+      final audio = await service.getAudio(bvid, cid);
+      return Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
+    });
+  }
+
+  Future<void> _init() async {
+    final file = await localFile;
     _downloadProgressSubject.add(file.existsSync() ? 1.0 : 0.0);
   }
 
@@ -51,15 +76,8 @@ class LazyAudioSource extends StreamAudioSource {
       throw Exception("Cannot clear cache while download is in progress");
     }
     _response = null;
-    final file = await localFile;
-    if (file.existsSync()) {
-      await file.delete();
-    }
     if (file.existsSync()) await file.delete();
-    final mimeFile = await _mimeFile;
-    if (await mimeFile.exists()) {
-      await mimeFile.delete();
-    }
+    
     if (await mimeFile.exists()) await mimeFile.delete();
     _progress = 0;
     _downloadProgressSubject.add(0.0);
@@ -77,24 +95,14 @@ class LazyAudioSource extends StreamAudioSource {
   Future<String> _readCachedMimeType() async {
     final file = await _mimeFile;
     if (file.existsSync()) {
-      return (await _mimeFile).readAsString();
       return file.readAsStringSync();
     } else {
       return 'audio/mpeg';
     }
   }
 
-  /// Start downloading the whole audio file to the cache and fulfill byte-range
-  /// requests during the download. There are 3 scenarios:
-  ///
-  /// 1. If the byte range request falls entirely within the cache region, it is
-  /// fulfilled from the cache.
-  /// 2. If the byte range request overlaps the cached region, the first part is
-  /// fulfilled from the cache, and the region beyond the cache is fulfilled
-  /// from a memory buffer of the downloaded data.
-  /// 3. If the byte range request is entirely outside the cached region, a
-  /// separate HTTP request is made to fulfill it while the download of the
-  /// entire file continues in parallel.
+
+
   Future<void> safeRename(File file, String targetPath,
       {int retries = 5, int delayMs = 200}) async {
     for (int i = 0; i < retries; i++) {
@@ -108,18 +116,45 @@ class LazyAudioSource extends StreamAudioSource {
     }
   }
 
+
+
+  
+  /// Start downloading the whole audio file to the cache and fulfill byte-range
+  /// requests during the download. There are 3 scenarios:
+  ///
+  /// 1. If the byte range request falls entirely within the cache region, it is
+  /// fulfilled from the cache.
+  /// 2. If the byte range request overlaps the cached region, the first part is
+  /// fulfilled from the cache, and the region beyond the cache is fulfilled
+  /// from a memory buffer of the downloaded data.
+  /// 3. If the byte range request is entirely outside the cached region, a
+  /// separate HTTP request is made to fulfill it while the download of the
+  /// entire file continues in parallel.
   Future<HttpClientResponse> _fetch() async {
     _downloading = true;
     final partialCacheFile = await _partialCacheFile;
-@@ -142,18 +112,15 @@ class LazyAudioSource extends StreamAudioSource {
+    final localFile = await this.localFile;
+
+    File getEffectiveCacheFile() =>
+        partialCacheFile.existsSync() ? partialCacheFile : localFile;
+
+    var uri = await this.uri;
+    final headers = (await BilibiliService.instance).headers;
+
+    final httpClient = HttpClient();
+    var httpRequest = await _getUrl(httpClient, uri, headers: headers);
+    var response = await httpRequest.close();
+    if (response.statusCode == 403) {
+      final service = await BilibiliService.instance;
+      final audio = await service.getAudio(bvid, cid);
+      uri = Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
+      httpRequest = await _getUrl(httpClient, uri, headers: headers);
+      response = await httpRequest.close();
+    }
+    if (response.statusCode != 200) {
       httpClient.close();
       throw Exception('HTTP Status Error: ${response.statusCode}');
     }
-    (await _partialCacheFile).createSync(recursive: true);
-    // TODO: Should close sink after done, but it throws an error.
-    // ignore: close_sinks
-    final sink = (await _partialCacheFile).openWrite();
-
     partialCacheFile.createSync(recursive: true);
     final sink = partialCacheFile.openWrite();
     final sourceLength =
@@ -130,19 +165,23 @@ class LazyAudioSource extends StreamAudioSource {
         acceptRanges != null && acceptRanges != 'none';
     final mimeFile = await _mimeFile;
     await mimeFile.writeAsString(mimeType);
-
     final inProgressResponses = <_InProgressCacheResponse>[];
     late StreamSubscription<List<int>> subscription;
     var percentProgress = 0;
-@@ -165,6 +132,7 @@ class LazyAudioSource extends StreamAudioSource {
+    void updateProgress(int newPercentProgress) {
+      if (newPercentProgress != percentProgress) {
+        percentProgress = newPercentProgress;
+        _downloadProgressSubject.add(percentProgress / 100);
+      }
     }
 
     _progress = 0;
-
     subscription = response.listen((data) async {
       _progress += data.length;
       final newPercentProgress = (sourceLength == null)
-@@ -174,145 +142,56 @@ class LazyAudioSource extends StreamAudioSource {
+          ? 0
+          : (sourceLength == 0)
+              ? 100
               : (100 * _progress ~/ sourceLength);
       updateProgress(newPercentProgress);
       sink.add(data);
@@ -248,28 +287,18 @@ class LazyAudioSource extends StreamAudioSource {
           request.fail(e, st);
         });
       }
-      // 处理 inProgressResponses 和 _requests（略，保持原逻辑）
     }, onDone: () async {
-      if (sourceLength == null) {
-        updateProgress(100);
-      }
-      if (sourceLength == null) updateProgress(100);
-
+       if (sourceLength == null) updateProgress(100);
       for (var cacheResponse in inProgressResponses) {
         if (!cacheResponse.controller.isClosed) {
           cacheResponse.controller.close();
         }
       }
-      (await _partialCacheFile).renameSync(localFile.path);
-
-      // 先 flush 并关闭 sink
       await sink.flush();
       await sink.close();
       await subscription.cancel();
-      httpClient.close();
+   //   httpClient.close();
       _downloading = false;
-
-      // Save cache metadata first
       // 使用 safeRename 避免 Windows 文件占用失败
       try {
         await safeRename(partialCacheFile, localFile.path);
@@ -282,18 +311,14 @@ class LazyAudioSource extends StreamAudioSource {
       await DatabaseManager.saveCacheMetadata(bvid, cid, localFile);
 
       // Add a small delay before cleaning up cache to avoid database lock issues
-      // 延迟 100ms 避免数据库锁冲突
       await Future.delayed(const Duration(milliseconds: 100));
 
       // Clean up cache as a separate operation
-      // 清理旧缓存
       DatabaseManager.cleanupCache(ignoreFile: localFile);
     }, onError: (Object e, StackTrace stackTrace) async {
-      (await _partialCacheFile).deleteSync();
-      await sink.close();
+     await sink.close();
       partialCacheFile.deleteSync();
       httpClient.close();
-
       // Fail all pending requests
       for (final req in _requests) {
         req.fail(e, stackTrace);
@@ -306,24 +331,30 @@ class LazyAudioSource extends StreamAudioSource {
       }
       _downloading = false;
     }, cancelOnError: true);
-
     return response;
   }
 
-@@ -332,127 +211,19 @@ class LazyAudioSource extends StreamAudioSource {
+  @override
+  Future<StreamAudioResponse> request([int? start, int? end]) async {
+    final file = await localFile;
+    if (file.existsSync()) {
+      final sourceLength = file.lengthSync();
+      return StreamAudioResponse(
+        rangeRequestsSupported: true,
+        sourceLength: start != null ? sourceLength : null,
+        contentLength: (end ?? sourceLength) - (start ?? 0),
+        offset: start,
+        contentType: await _readCachedMimeType(),
+        stream: file.openRead(start, end).asBroadcastStream(),
+      );
     }
     final byteRangeRequest = _StreamingByteRangeRequest(start, end);
     _requests.add(byteRangeRequest);
-    _response ??=
-        _fetch().catchError((dynamic error, StackTrace? stackTrace) async {
+      _response ??= _fetch().catchError((dynamic error, StackTrace? stackTrace) async {
       // So that we can restart later
-    _response ??= _fetch().catchError((dynamic error, StackTrace? stackTrace) async {
       _response = null;
       // Cancel any pending request
-      for (final req in _requests) {
-        req.fail(error, stackTrace);
-      }
-      for (final req in _requests) req.fail(error, stackTrace);
+       for (final req in _requests) req.fail(error, stackTrace);
       return Future<HttpClientResponse>.error(error as Object, stackTrace);
     });
     return byteRangeRequest.future.then((response) {
@@ -331,9 +362,6 @@ class LazyAudioSource extends StreamAudioSource {
         // So that we can restart later
         _response = null;
         // Cancel any pending request
-        for (final req in _requests) {
-          req.fail(e, st);
-        }
         for (final req in _requests) req.fail(e, st);
       });
       return response;
@@ -441,4 +469,3 @@ class _HttpRangeRequest {
     return _HttpRangeRequest(intGroup(1)!, intGroup(3));
   }
 }
-// 其他类 _InProgressCacheResponse 和 _StreamingByteRangeRequest 保持原样

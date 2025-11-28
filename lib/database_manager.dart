@@ -67,6 +67,22 @@ class DatabaseManager {
       path = join(documentsDirectory.path, _dbName);
     }
 
+     if (Platform.isWindows) {
+  final homePath = Platform.environment['USERPROFILE'];
+  if (homePath == null) {
+    throw Exception('Could not find USERPROFILE directory');
+  }
+  final dataDir = Directory(join(homePath, 'bmsc'));
+  if (!await dataDir.exists()) {
+    await dataDir.create(recursive: true);
+  }
+  path = join(dataDir.path, _dbName);
+} else {
+  final documentsDirectory = await getApplicationDocumentsDirectory();
+  path = join(documentsDirectory.path, _dbName);
+}
+
+
     try {
       final db = await openDatabase(
         path,

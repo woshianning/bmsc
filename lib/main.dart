@@ -23,6 +23,7 @@ import 'screen/about_screen.dart';
 import 'util/logger.dart';
 import 'package:bmsc/screen/settings_screen.dart';
 import 'package:bmsc/theme.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'util/string.dart';
 
@@ -30,6 +31,12 @@ final _logger = LoggerUtils.getLogger('main');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  /// ⭐ Windows/Linux 初始化 SQLite FFI（你当前缺少的部分）
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   if (Platform.isAndroid) {
     _logger.info('Android version: ${Platform.operatingSystemVersion}');
@@ -50,6 +57,7 @@ Future<void> main() async {
   runApp(const MyApp());
   LoggerUtils.init();
 }
+
 
 void _setupErrorHandlers() {
   FlutterError.onError = (FlutterErrorDetails details) {

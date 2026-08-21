@@ -1,2 +1,4 @@
 #include "../../Flutter/Flutter-Debug.xcconfig"
 #include "Warnings.xcconfig"
+
+CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements

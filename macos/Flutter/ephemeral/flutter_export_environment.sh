@@ -1,0 +1,15 @@
+#!/bin/sh
+# This is a generated file; do not edit or check into version control.
+export "FLUTTER_ROOT=/Users/an/Downloads/flutter"
+export "FLUTTER_APPLICATION_PATH=/Users/an/Downloads/bmsc"
+export "FLUTTER_FRAMEWORK_SWIFT_PACKAGE_PATH=/Users/an/Downloads/bmsc/macos/Flutter/ephemeral/Packages/.packages/FlutterFramework"
+export "COCOAPODS_PARALLEL_CODE_SIGN=true"
+export "FLUTTER_TARGET=lib/main.dart"
+export "FLUTTER_BUILD_DIR=build"
+export "FLUTTER_BUILD_NAME=99.99.99"
+export "FLUTTER_BUILD_NUMBER=99.99.99"
+export "DART_DEFINES=RkxVVFRFUl9CVUlMRF9OQU1FPTk5Ljk5Ljk5,RkxVVFRFUl9WRVJTSU9OPTMuNDcuMQ==,RkxVVFRFUl9DSEFOTkVMPXN0YWJsZQ==,RkxVVFRFUl9HSVRfVVJMPWh0dHBzOi8vZ2l0aHViLmNvbS9mbHV0dGVyL2ZsdXR0ZXIuZ2l0,RkxVVFRFUl9GUkFNRVdPUktfUkVWSVNJT049NjY1NTQ4MmVjMA==,RkxVVFRFUl9FTkdJTkVfUkVWSVNJT049NWQ1MzE3ODg2OQ==,RkxVVFRFUl9EQVJUX1ZFUlNJT049My4xMy4x"
+export "DART_OBFUSCATION=false"
+export "TRACK_WIDGET_CREATION=true"
+export "TREE_SHAKE_ICONS=true"
+export "PACKAGE_CONFIG=/Users/an/Downloads/bmsc/.dart_tool/package_config.json"

@@ -10,6 +10,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rxdart/subjects.dart';
+import 'package:path_provider/path_provider.dart';
 
 final _logger = LoggerUtils.getLogger('SharedPreferencesService');
 
@@ -41,9 +42,36 @@ class SharedPreferencesService {
 
   static Future<String> getDownloadPath() async {
     final prefs = await instance;
-    final value =
-        prefs.getString('downloadPath') ?? '/storage/emulated/0/Download/BMSC';
-    return value;
+    final savedPath = prefs.getString('downloadPath');
+    final defaultPath = await _getDefaultDownloadPath();
+    final isOldDefaultPath = savedPath == '/storage/emulated/0/Download/BMSC' ||
+        savedPath == '/storage/emulated/0/Download/bmsc';
+    if (savedPath != null && !isOldDefaultPath) {
+      return savedPath;
+    }
+    return defaultPath;
+  }
+
+  static Future<String> _getDefaultDownloadPath() async {
+    if (Platform.isWindows) {
+      return '${File(Platform.resolvedExecutable).parent.path}/bmsc';
+    }
+
+    if (Platform.isAndroid) {
+      return '/storage/emulated/0/bmsc';
+    }
+
+    final downloadsDirectory = await getDownloadsDirectory();
+    if (downloadsDirectory != null) {
+      return '${downloadsDirectory.path}/bmsc';
+    }
+
+    final baseDirectory = await getApplicationDocumentsDirectory();
+    return '${baseDirectory.path}/bmsc';
+  }
+
+  static Future<String> getCachePath() async {
+    return '${await getDownloadPath()}/cache';
   }
 
   static Future<void> setDownloadPath(String value) async {

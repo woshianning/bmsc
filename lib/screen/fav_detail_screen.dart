@@ -296,8 +296,11 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                                 widget.fav.id)
                             : await DatabaseManager.getCachedFavBvids(
                                 widget.fav.id);
+                        _logger.info(
+                          'Loaded ${bvids.length} BVIDs, initializing audio service');
                         await AudioService.instance
                             .then((x) => x.playByBvids(bvids, index: index));
+                        _logger.info('Finished starting playback');
                       } catch (e, stackTrace) {
                         _logger.severe('Error playing fav list', e, stackTrace);
                       }

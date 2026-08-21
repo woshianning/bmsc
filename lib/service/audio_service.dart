@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:bmsc/database_manager.dart';
@@ -9,7 +10,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
 import 'package:rxdart/rxdart.dart';
-import 'dart:async';
 
 final _logger = LoggerUtils.getLogger('AudioService');
 
@@ -22,7 +22,7 @@ class AudioService {
     children: [],
   );
   final player = AudioPlayer(handleInterruptions: false);
-  late AudioSession session;
+  AudioSession? session;
   Timer? _historyReportTimer;
   Timer? _playPositionTimer;
   Timer? _sleepTimer;
@@ -48,41 +48,73 @@ class AudioService {
 
   static Future<AudioService> _init() async {
     final x = AudioService();
+    _logger.info('AudioService initialization started');
     try {
       final restored = await SharedPreferencesService.getPlaylist();
+      _logger.info('AudioService playlist preferences loaded');
       if (restored != null) {
         await x.playlist.addAll(restored.$1);
       }
-      await x.player.setAudioSource(x.playlist);
-      final position = await SharedPreferencesService.getPlayPosition();
-      if (restored != null && restored.$2 < x.playlist.length) {
-        await x.player.seek(null, index: restored.$2);
-        await Future.delayed(const Duration(milliseconds: 100));
-        await x.player.seek(Duration(seconds: position));
+      if (x.playlist.children.isNotEmpty) {
+        _logger.info('Setting restored audio source');
+        await x.player.setAudioSource(x.playlist);
       }
+      _logger.info('Audio source initialization finished');
+      final position = await SharedPreferencesService.getPlayPosition();
+      _logger.info('Restored play position: $position');
+      if (restored != null && restored.$2 < x.playlist.length) {
+        _logger.info('Restoring playlist index: ${restored.$2}');
+        try {
+          await x.player
+              .seek(null, index: restored.$2)
+              .timeout(const Duration(seconds: 3));
+          await Future.delayed(const Duration(milliseconds: 100));
+          await x.player
+              .seek(Duration(seconds: position))
+              .timeout(const Duration(seconds: 3));
+          _logger.info('Restored playlist position');
+        } on TimeoutException {
+          _logger.warning('Skipping playlist position restore after timeout');
+        }
+      }
+      _logger.info('Restoring play mode');
       await x.restorePlayMode();
+      _logger.info('Restored play mode');
 
       // 恢复定时停止播放设置
       final sleepTimerMinutes =
           await SharedPreferencesService.getSleepTimerMinutes();
-      if (sleepTimerMinutes != null) {
-        // 如果剩余时间小于1分钟，则不恢复定时器
-        if (sleepTimerMinutes > 0) {
-          await x.setSleepTimer(sleepTimerMinutes);
-        }
+      if (sleepTimerMinutes != null && sleepTimerMinutes > 0) {
+        _logger.info('Restoring sleep timer: $sleepTimerMinutes');
+        await x.setSleepTimer(sleepTimerMinutes);
       }
 
       // 恢复播放速度设置
       final speed = await SharedPreferencesService.getPlaybackSpeed();
       if (speed != null) {
+        _logger.info('Restoring playback speed: $speed');
         await x.setPlaybackSpeed(speed);
       }
+      _logger.info('Playback preferences restored');
     } catch (e) {
       _logger.severe('Failed to restore playlist', e);
     }
-    x.session = await AudioSession.instance;
-    await x.session.configure(const AudioSessionConfiguration.music());
+
+    // 尝试初始化 AudioSession（macOS 不支持会抛异常，捕获后继续）
+    try {
+      _logger.info('Initializing AudioSession');
+      x.session = await AudioSession.instance;
+      await x.session!.configure(const AudioSessionConfiguration.music());
+      _logger.info('AudioSession initialization finished');
+    } catch (e) {
+      _logger.warning('AudioSession not supported on this platform (skip).');
+      // 保证 session 为 null 以便后续判空
+    }
+
+    // 无论 session 是否成功，都绑定事件（内部监听始终可用）
+    _logger.info('Binding audio player events');
     await x.hookEvents();
+    _logger.info('AudioService initialization finished');
     return x;
   }
 
@@ -92,7 +124,6 @@ class AudioService {
         tag: MediaItem(
             id: x.bvid,
             title: x.title,
-            // http://i0.hdslb.com/bfs/archive/32ddc1acc1cba622cbcd789ff7e0b91bcf0097fe.jpg
             artUri: Uri.http(x.artUri.substring(7, 19), x.artUri.substring(19)),
             artist: x.artist,
             duration: Duration(seconds: x.duration),
@@ -113,11 +144,11 @@ class AudioService {
   Future<void> setInterrupHandler(bool value) async {
     if (value) {
       _interruptionEventSubscription =
-          session.interruptionEventStream.listen((event) {
+          session!.interruptionEventStream.listen((event) {
         if (event.begin) {
           switch (event.type) {
             case AudioInterruptionType.duck:
-              if (session.androidAudioAttributes!.usage ==
+                if (session!.androidAudioAttributes?.usage ==
                   AndroidAudioUsage.game) {
                 player.setVolume(player.volume / 2);
               }
@@ -127,8 +158,6 @@ class AudioService {
             case AudioInterruptionType.unknown:
               if (player.playing) {
                 player.pause();
-                // Although pause is async and sets _playInterrupted = false,
-                // this is done in the sync portion.
                 _playInterrupted = true;
               }
               break;
@@ -154,13 +183,23 @@ class AudioService {
     }
   }
 
+  // 绑定所有事件（外部系统事件 + 播放器内部事件）
   Future<void> hookEvents() async {
-    setInterrupHandler(await SharedPreferencesService.getReactToInterruption());
+    // 仅当 session 有效时绑定系统级事件（macOS 上 session 为 null 则跳过）
+    if (session != null) {
+      setInterrupHandler(await SharedPreferencesService.getReactToInterruption());
 
-    session.becomingNoisyEventStream.listen((_) {
-      player.pause();
-    });
+      session!.becomingNoisyEventStream.listen((_) {
+        player.pause();
+      });
+    }
 
+    // 播放器内部事件始终绑定（不依赖 session）
+    _bindPlayerInternalEvents();
+  }
+
+  // 播放器内部状态监听（循环模式、当前索引、播放状态等）
+  void _bindPlayerInternalEvents() {
     Rx.combineLatest2(player.loopModeStream, player.shuffleModeEnabledStream,
         (a, b) => (a, b)).listen((data) async {
       final (loopMode, shuffleModeEnabled) = data;
@@ -204,6 +243,10 @@ class AudioService {
         }
         _historyUpdateCnt = 0;
       }
+    });
+
+    player.errorStream.listen((error) {
+      _logger.severe('Audio playback error: ${error.message}', error);
     });
   }
 
@@ -270,19 +313,15 @@ class AudioService {
 
   // 设置定时停止播放
   Future<void> setSleepTimer(int? minutes, {DateTime? specificTime}) async {
-    // 取消现有的定时器
     _sleepTimer?.cancel();
     _sleepTimer = null;
     _fadeTimer?.cancel();
     _fadeTimer = null;
 
-    // 恢复音量
     await player.setVolume(1);
 
-    // 更新设置
     await SharedPreferencesService.setSleepTimerMinutes(minutes);
 
-    // 如果minutes和specificTime都为null，表示取消定时
     if (minutes == null && specificTime == null) {
       _sleepTimerSubject.add(null);
       return;
@@ -291,22 +330,16 @@ class AudioService {
     int durationInSeconds;
 
     if (specificTime != null) {
-      // 计算从现在到指定时刻的秒数
       final now = DateTime.now();
       final difference = specificTime.difference(now);
-
-      // 如果指定时间已经过去，则不设置定时器
       if (difference.isNegative) {
         _sleepTimerSubject.add(null);
         return;
       }
-
       durationInSeconds = difference.inSeconds;
-      // 保存为分钟，用于恢复
       await SharedPreferencesService.setSleepTimerMinutes(
           durationInSeconds ~/ 60);
     } else {
-      // 使用分钟计算
       durationInSeconds = minutes! * 60;
     }
 
@@ -316,7 +349,6 @@ class AudioService {
       final remainingSeconds = durationInSeconds - timer.tick;
 
       if (remainingSeconds <= 0) {
-        // 时间到，停止播放
         player.pause();
         _sleepTimer?.cancel();
         _sleepTimer = null;
@@ -324,13 +356,10 @@ class AudioService {
         _fadeTimer = null;
         _sleepTimerSubject.add(null);
         SharedPreferencesService.setSleepTimerMinutes(null);
-        // 恢复音量
         player.setVolume(1);
       } else if (remainingSeconds <= _fadeOutDuration && _fadeTimer == null) {
-        // 开始淡出
         _startFadeOut(remainingSeconds);
       } else {
-        // 更新剩余时间
         _sleepTimerSubject.add(remainingSeconds);
       }
     });
@@ -351,7 +380,6 @@ class AudioService {
     });
   }
 
-  // 获取当前定时器剩余时间（秒）
   int? get sleepTimerRemainingSeconds => _sleepTimerSubject.valueOrNull;
 
   Future<void> _hijackDummySource({int? index}) async {
@@ -363,6 +391,7 @@ class AudioService {
       _logger.warning('No current index available for hijacking');
       return;
     }
+    final currentIndex = index;
     if (index >= playlist.length) {
       return;
     }
@@ -414,11 +443,11 @@ class AudioService {
       if (isShuffle) {
         await player.setShuffleModeEnabled(false);
       }
-      await playlist.insertAll(index! + 1, srcs!);
+      await playlist.insertAll(currentIndex + 1, srcs!);
       if (player.loopMode == LoopMode.one) {
-        await player.seek(Duration.zero, index: index + 1);
+        await player.seek(Duration.zero, index: currentIndex + 1);
       }
-      await playlist.removeAt(index);
+      await playlist.removeAt(currentIndex);
       if (isShuffle) {
         await player.setShuffleModeEnabled(true);
       }
@@ -451,19 +480,26 @@ class AudioService {
     if (bvids.isEmpty) {
       return;
     }
-    final metas = await DatabaseManager.getMetas(bvids);
-    final srcs = metas.map(getDummyAudioSource).toList();
-    await player.pause();
-    _hijacking = true;
-    await doAndSavePlaylist(() async {
-      await playlist.clear();
-      await playlist.addAll(srcs);
-    });
-    _hijacking = false;
-    _hijackDummySource(index: index);
-    await player.seek(Duration.zero, index: index);
-    await player.play();
-    _logger.info('playByBvids done');
+    try {
+      _logger.info('Preparing ${bvids.length} tracks for index $index');
+      final metas = await DatabaseManager.getMetas(bvids);
+      final srcs = metas.map(getDummyAudioSource).toList();
+      await player.pause();
+      _hijacking = true;
+      await doAndSavePlaylist(() async {
+        await playlist.clear();
+        await playlist.addAll(srcs);
+      });
+      _hijacking = false;
+      await player.setAudioSource(playlist);
+      await _hijackDummySource(index: index);
+      await player.seek(Duration.zero, index: index);
+      await player.play();
+      _logger.info('playByBvids done');
+    } catch (e, stackTrace) {
+      _hijacking = false;
+      _logger.severe('Failed to play track list', e, stackTrace);
+    }
   }
 
   Future<void> playLocalAudio(String bvid, int cid) async {

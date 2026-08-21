@@ -1,4 +1,5 @@
 import 'dart:convert' as convert;
+import 'dart:io' show Platform;  // <--- 关键新增
 
 import 'package:bmsc/api/bilibili_api_constant.dart';
 import 'package:bmsc/model/comment.dart';
@@ -22,9 +23,13 @@ import 'package:dio/dio.dart';
 class BilibiliAPI {
   static final _logger = LoggerUtils.getLogger('BilibiliAPI');
 
-  late String cookies;
-  late Map<String, String> headers;
-  Dio dio = Dio();
+  String cookies = '';
+  Map<String, String> headers = {};
+  Dio dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 15),
+    sendTimeout: const Duration(seconds: 15),
+    receiveTimeout: const Duration(seconds: 15),
+  ));
   bool noNetwork = false;
   ConnectionService connectionService = ConnectionService.getInstance();
 
@@ -87,6 +92,7 @@ class BilibiliAPI {
     }
   }
 
+  // ============ 关键修改就在这里 ============
   Future<T?> _callAPI<T>(String url,
       {Map<String, dynamic>? queryParameters,
       T? Function(dynamic data)? callback,
@@ -95,11 +101,14 @@ class BilibiliAPI {
       String unwrapKey = "data",
       bool needDecode = false,
       Map<String, dynamic>? extraHeaders}) async {
+    // 新增：macOS 上跳过 noNetwork 检查
+    if (!Platform.isMacOS && noNetwork) {
+      _logger.info("no network. return null");
+      return null;
+    }
+    // =========================================
+
     try {
-      if (noNetwork) {
-        _logger.info("no network. return null");
-        return null;
-      }
       final options = Options(headers: extraHeaders ?? {});
       final response = isPost
           ? await dio.post(url,
@@ -139,6 +148,7 @@ class BilibiliAPI {
     }
   }
 
+  // ---------- 其余所有方法保持不变 ----------
   Future<List<T>?> _callAPIMultiPage<T>(String url,
       {Map<String, dynamic>? queryParameters,
       required Map<String, dynamic> Function(int page) params,
@@ -163,8 +173,6 @@ class BilibiliAPI {
     return _callAPI(apiMyInfoUrl, callback: (data) => MyInfo.fromJson(data));
   }
 
-  /// 获取收藏夹列表
-  /// rid: 视频稿件 avid ，检查收藏夹是否包含该稿件
   Future<List<Fav>?> getFavs(int uid, {int? rid}) async {
     return _callAPI(apiFavsUrl,
         queryParameters: {'up_mid': uid, 'rid': rid},

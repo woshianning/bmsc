@@ -41,7 +41,7 @@ Future<void> main() async {
     );
   }
 
-  if (Platform.isLinux || Platform.isWindows) {
+  if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
     JustAudioMediaKit.ensureInitialized();
   }
 

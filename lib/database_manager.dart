@@ -623,12 +623,8 @@ class DatabaseManager {
   }
 
   static Future<File> prepareFileForCaching(String bvid, int cid) async {
-    String directory;
-    if (Platform.isLinux || Platform.isWindows) {
-      directory = (await getApplicationCacheDirectory()).path;
-    } else {
-      directory = (await getApplicationDocumentsDirectory()).path;
-    }
+    final directory = await SharedPreferencesService.getCachePath();
+    await Directory(directory).create(recursive: true);
     final fileName = '$bvid-$cid.m4a';
     final filePath = join(directory, fileName);
     return File(filePath);

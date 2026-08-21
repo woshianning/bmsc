@@ -270,8 +270,7 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: FutureBuilder<String>(
                   future: SharedPreferencesService.getDownloadPath(),
                   builder: (context, snapshot) {
-                    final path =
-                        snapshot.data ?? '/storage/emulated/0/Download/BMSC';
+                    final path = snapshot.data ?? '未设置';
                     return Text(path);
                   },
                 ),

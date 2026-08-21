@@ -1,5 +1,6 @@
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:gt3_flutter_plugin/gt3_flutter_plugin.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -48,6 +49,9 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        throw UnsupportedError('macOS 暂不支持极验登录，请使用 Android 或 iOS 版本');
+      }
       final captcha =
           await BilibiliService.instance.then((x) => x.getLoginCaptcha());
       if (captcha == null) {
@@ -116,6 +120,9 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        throw UnsupportedError('macOS 暂不支持极验登录，请使用 Android 或 iOS 版本');
+      }
       final captcha =
           await BilibiliService.instance.then((x) => x.getLoginCaptcha());
       if (captcha == null) {

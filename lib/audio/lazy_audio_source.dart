@@ -129,7 +129,7 @@ class LazyAudioSource extends StreamAudioSource {
     var uri = await this.uri;
     final headers = (await BilibiliService.instance).headers;
 
-    final httpClient = HttpClient();
+    final httpClient = _createHttpClient();
     var httpRequest = await _getUrl(httpClient, uri, headers: headers);
     var response = await httpRequest.close();
     if (response.statusCode == 403) {
@@ -251,7 +251,7 @@ class LazyAudioSource extends StreamAudioSource {
         _requests.remove(request);
         final start = request.start!;
         final end = request.end ?? sourceLength;
-        final httpClient = HttpClient();
+        final httpClient = _createHttpClient();
 
         final rangeRequest = _HttpRangeRequest(start, end);
         _getUrl(httpClient, uri, headers: {
@@ -428,6 +428,22 @@ Future<HttpClientRequest> _getUrl(HttpClient client, Uri uri,
   // Match ExoPlayer's native behavior
   request.maxRedirects = 20;
   return request;
+}
+
+HttpClient _createHttpClient() {
+  final client = HttpClient();
+  final proxy = Platform.environment['https_proxy'] ??
+      Platform.environment['HTTPS_PROXY'] ??
+      Platform.environment['http_proxy'] ??
+      Platform.environment['HTTP_PROXY'];
+  if (proxy != null && proxy.isNotEmpty) {
+    final proxyUri = Uri.tryParse(proxy);
+    if (proxyUri != null && proxyUri.host.isNotEmpty) {
+      final port = proxyUri.hasPort ? proxyUri.port : 80;
+      client.findProxy = (_) => 'PROXY ${proxyUri.host}:$port; DIRECT';
+    }
+  }
+  return client;
 }
 
 /// Encapsulates the start and end of an HTTP range request.

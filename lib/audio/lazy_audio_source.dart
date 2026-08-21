@@ -101,10 +101,15 @@ class LazyAudioSource extends StreamAudioSource {
   Future<String> _readCachedMimeType() async {
     final file = await _mimeFile;
     if (file.existsSync()) {
-      return (await _mimeFile).readAsString();
+      return _normalizeAudioMime(await file.readAsString());
     } else {
-      return 'audio/mpeg';
+      return 'audio/mp4';
     }
+  }
+
+  String _normalizeAudioMime(String mimeType) {
+    final normalized = mimeType.split(';').first.trim().toLowerCase();
+    return normalized.startsWith('audio/') ? normalized : 'audio/mp4';
   }
 
   /// Start downloading the whole audio file to the cache and fulfill byte-range
@@ -149,7 +154,8 @@ class LazyAudioSource extends StreamAudioSource {
     final sink = (await _partialCacheFile).openWrite();
     final sourceLength =
         response.contentLength == -1 ? null : response.contentLength;
-    final mimeType = response.headers.contentType.toString();
+    final mimeType = _normalizeAudioMime(
+      response.headers.contentType?.toString() ?? 'audio/mp4');
     final acceptRanges = response.headers.value(HttpHeaders.acceptRangesHeader);
     final originSupportsRangeRequests =
         acceptRanges != null && acceptRanges != 'none';
@@ -286,6 +292,8 @@ class LazyAudioSource extends StreamAudioSource {
           cacheResponse.controller.close();
         }
       }
+      await sink.flush();
+      await sink.close();
       (await _partialCacheFile).renameSync(localFile.path);
       await subscription.cancel();
       httpClient.close();
@@ -300,6 +308,7 @@ class LazyAudioSource extends StreamAudioSource {
       // Clean up cache as a separate operation
       DatabaseManager.cleanupCache(ignoreFile: localFile);
     }, onError: (Object e, StackTrace stackTrace) async {
+      await sink.close();
       (await _partialCacheFile).deleteSync();
       httpClient.close();
       // Fail all pending requests

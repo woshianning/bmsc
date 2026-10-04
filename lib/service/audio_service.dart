@@ -261,6 +261,7 @@ class AudioService {
     } catch (e) {
       _logger.severe('AudioService._init: session setup failed', e);
     }
+    await x.hookEvents();
     // 注册缓存清理保护：正在播放的本地缓存文件不被删除（iOS 经本地代理
     // 流式读文件，删除会立即中断播放）
     DatabaseManager.cacheFileGuard = () async {
@@ -533,11 +534,14 @@ class AudioService {
   }
 
   Future<void> hookEvents() async {
-    setInterrupHandler(await SharedPreferencesService.getReactToInterruption());
-
-    session.becomingNoisyEventStream.listen((_) {
-      player.pause();
-    });
+    try {
+      setInterrupHandler(await SharedPreferencesService.getReactToInterruption());
+      session.becomingNoisyEventStream.listen((_) {
+        player.pause();
+      });
+    } catch (e) {
+      _logger.warning('session events not bound: $e');
+    }
 
     // 捕获原生端播放错误（AVPlayerItem status=failed 的错误码/描述）。
     // AVQueuePlayer 对失败项是静默跳过的，不记录则完全无法诊断

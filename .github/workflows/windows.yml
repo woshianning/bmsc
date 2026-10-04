@@ -1,0 +1,56 @@
+name: Build Windows
+
+on:
+  push:
+    tags:
+      - 'v*'          # 打 v1.0.0 这类 tag 时触发
+  workflow_dispatch:   # 也支持手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.0'   # 与本地保持一致；或用 channel: stable
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+
+      # 把整个 build 目录打包成 zip，方便下载
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* `
+                           -DestinationPath bmsc-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bmsc-windows
+          path: bmsc-windows.zip
+
+      # 如果是打 tag 触发，顺便创建 GitHub Release 并上传
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bmsc-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

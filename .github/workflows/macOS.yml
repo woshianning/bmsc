@@ -16,7 +16,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          architecture: 'universal' 
+          architecture: 'arm64' 
           cache: true
 
       - name: Flutter doctor

@@ -17,7 +17,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.0'   # 与本地保持一致；或用 channel: stable
+         # flutter-version: '3.35.0'   # 与本地保持一致；或用 channel: stable
           channel: stable
           cache: true
 

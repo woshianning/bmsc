@@ -48,6 +48,16 @@ class BilibiliService {
 
     service.myInfo = await SharedPreferencesService.getMyInfo();
 
+    // 会话失效信号（-101 + 持有 SESSDATA）：标记过期。必须在
+    // getMyInfo 之前注册——启动时 myinfo 的 -101 即在此捕获，
+    // UI 拿到的实例已带过期标记，不再以缓存 myInfo 拼出假登录态
+    service._bilibiliAPI.onSessionInvalid = () {
+      if (service.sessionExpired.value) return;
+      service.sessionExpired.value = true;
+      _logger.warning(
+          'session expired: cookie invalid or logged in elsewhere');
+    };
+
     final newInfo = await service._bilibiliAPI.getMyInfo();
     if (newInfo != null) {
       await SharedPreferencesService.setMyInfo(newInfo);
@@ -84,10 +94,17 @@ class BilibiliService {
   Map<String, String>? get headers => _bilibiliAPI.headers;
   MyInfo? myInfo;
 
+  /// 登录态是否已失效（-101 账号未登录 + 本地持有 SESSDATA：
+  /// cookie 过期或异地登录被踢）。UI 监听它把缓存 myInfo 撑起的
+  /// 假登录态切换为「登录已过期，请重新登录」。
+  final ValueNotifier<bool> sessionExpired = ValueNotifier(false);
+
   Future<void> refreshMyInfo() async {
     myInfo = await _bilibiliAPI.getMyInfo();
     if (myInfo != null) {
       await SharedPreferencesService.setMyInfo(myInfo!);
+      // 重新拿到有效登录态（重新登录成功）：清除过期标记
+      sessionExpired.value = false;
     }
     _updateHeadersFromMyInfo();
   }
@@ -95,6 +112,8 @@ class BilibiliService {
   Future<void> logout() async {
     await _bilibiliAPI.resetCookies();
     _bilibiliAPI.clearCookies();
+    _bilibiliAPI.onSessionInvalid = null;
+    sessionExpired.value = false;
     myInfo = null;
     await SharedPreferencesService.setMyInfo(MyInfo(0, "", "", ""));
     await SharedPreferencesService.setCookie('');
@@ -145,8 +164,15 @@ class BilibiliService {
   Future<List<Fav>?> getFavs(int mid, {int? rid}) async {
     final ret = await _bilibiliAPI.getFavs(mid, rid: rid);
     if (ret != null) {
-      DatabaseManager.cacheFavList(ret);
-      return ret;
+      // 会话失效时 created/list 返回的是匿名视角（私密收藏夹不可见，
+      // code=0 但列表为空），写入缓存会把已有收藏夹缓存抹成空
+      // （issue: 「无法收藏，收藏夹不见了」）；失效期间不信任网络
+      // 结果，回退本地缓存
+      if (!sessionExpired.value) {
+        DatabaseManager.cacheFavList(ret);
+        return ret;
+      }
+      return DatabaseManager.getCachedFavList();
     }
     return DatabaseManager.getCachedFavList();
   }
@@ -154,14 +180,22 @@ class BilibiliService {
   Future<List<Fav>?> getCollection(int mid) async {
     final ret = await _bilibiliAPI.getCollection(mid);
     if (ret != null) {
-      DatabaseManager.cacheCollectedFavList(ret);
+      // 同 getFavs：会话失效期间不缓存匿名视角的空列表
+      if (!sessionExpired.value) {
+        DatabaseManager.cacheCollectedFavList(ret);
+        return ret;
+      }
+      return DatabaseManager.getCachedCollectedFavList();
     }
-    return ret;
+    // 断网/超时失败时回退本地缓存（与 getFavs 对称）
+    return ret ?? DatabaseManager.getCachedCollectedFavList();
   }
 
   Future<List<Meta>?> getCollectionMetas(int mid) async {
     final ret = await _bilibiliAPI.getCollectionMetas(mid);
-    if (ret != null) {
+    // 同 getCollection：会话失效期间不信任网络结果——匿名视角的空列表
+    // 若写入全量替换型缓存会把已有内容抹成空（#17 修复未覆盖的路径）
+    if (ret != null && !sessionExpired.value) {
       DatabaseManager.cacheMetas(ret);
       DatabaseManager.cacheCollectedFavListVideo(
           ret.map((x) => x.bvid).toList(), mid);
@@ -171,7 +205,7 @@ class BilibiliService {
 
   Future<List<Meta>?> getFavMetas(int mid) async {
     final ret = await _bilibiliAPI.getFavMetas(mid);
-    if (ret != null) {
+    if (ret != null && !sessionExpired.value) {
       DatabaseManager.cacheMetas(ret);
       DatabaseManager.cacheFavListVideo(ret.map((x) => x.bvid).toList(), mid);
     }

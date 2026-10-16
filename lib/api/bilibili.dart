@@ -41,7 +41,17 @@ class BilibiliAPI {
 
   String _buvid3 = '';
 
-  BilibiliAPI({bool enableConnectivity = true}) {
+  /// false = 完全不做连通性管理（事件监听 + 探活自愈），noNetwork 为纯静态
+  /// 开关（测试用：auth_layer_test 的短路行为依赖静态语义）
+  final bool _enableConnectivity;
+
+  /// 会话失效回调：响应 -101（账号未登录）且本地持有 SESSDATA 时触发，
+  /// 即 cookie 过期或异地登录被踢。由 BilibiliService 注册，用于标记
+  /// 过期并引导用户重新登录。
+  void Function()? onSessionInvalid;
+
+  BilibiliAPI({bool enableConnectivity = true})
+      : _enableConnectivity = enableConnectivity {
     if (enableConnectivity) {
       connectionService.initialize();
       connectionService.connectionChange.listen((result) {
@@ -58,15 +68,23 @@ class BilibiliAPI {
     return entries.map((e) => '${e.key}=${e.value}').join('; ');
   }
 
+  /// Set-Cookie 的属性名（小写）。这些是会话元数据而非会话数据，
+  /// 解析时若不剔除会混进 Cookie 请求头并持久化（污染且无法自清）
+  static const _cookieAttributes = {
+    'expires', 'path', 'domain', 'max-age', 'samesite',
+  };
+
   Future<void> setCookie(String cookie, {bool save = false}) async {
     if (save) {
       await SharedPreferencesService.setCookie(cookie);
     }
-    // 解析 k=v 对合并进 cookie 组
+    // 解析 k=v 对合并进 cookie 组（跳过 Set-Cookie 属性）
     for (final part in cookie.split(';')) {
       final idx = part.indexOf('=');
       if (idx > 0) {
-        _cookieMap[part.substring(0, idx).trim()] = part.substring(idx + 1).trim();
+        final name = part.substring(0, idx).trim();
+        if (_cookieAttributes.contains(name.toLowerCase())) continue;
+        _cookieMap[name] = part.substring(idx + 1).trim();
       }
     }
     cookies = _buildCookieString();
@@ -82,6 +100,10 @@ class BilibiliAPI {
       _cookieMap[name] = value;
     }
     cookies = _buildCookieString();
+    // 与 setCookie/applyLoginCookies 一致：请求头同步重建。
+    // 漏掉这步时 headers['cookie'] 与 cookies 分叉（曾致整个会话
+    // 的请求都不带注入的 DedeUserID）
+    _setupHeaders();
   }
 
   /// 登录成功后应用完整会话（cookie 合并 + buvid3/DedeUserID），可选持久化
@@ -178,6 +200,19 @@ class BilibiliAPI {
     }
   }
 
+  /// -101（账号未登录）且本地持有 SESSDATA 时通知会话失效。
+  /// 网络故障不会返回 -101 的 JSON 业务码，因此这是明确的
+  /// 「SESSDATA 过期/异地登录被踢」信号；未登录用户（无 SESSDATA）
+  /// 的正常 -101 不触发，避免把「本来就没登录」误报成「登录过期」。
+  void _notifySessionInvalid(dynamic code) {
+    if (code != -101) return;
+    final sessdata = _cookieMap['SESSDATA'];
+    if (sessdata == null || sessdata.isEmpty) return;
+    _logger.warning(
+        'session invalid (-101 with SESSDATA): cookie expired or logged out elsewhere');
+    onSessionInvalid?.call();
+  }
+
   Future<T?> _callAPI<T>(String url,
       {Map<String, dynamic>? queryParameters,
       T? Function(dynamic data)? callback,
@@ -188,8 +223,17 @@ class BilibiliAPI {
       Map<String, dynamic>? extraHeaders}) async {
     try {
       if (noNetwork) {
-        _logger.info("no network. return null");
-        return null;
+        // 假阴性自愈：休眠断网恢复后 connectivity 事件可能漏发/探活早于
+        // 真正恢复，noNetwork 会卡住（2026-10-05 实测：识曲直连 Worker 成功
+        // 的同时 B 站 API 全部被此闸门短路）。调用前快速复测（两次，容忍
+        // 单次 DNS 抖动）而非永久短路。enableConnectivity=false（测试）
+        // 时保持静态短路语义。
+        if (_enableConnectivity && await connectionService.recheck()) {
+          noNetwork = false;
+        } else {
+          _logger.info("no network. return null");
+          return null;
+        }
       }
       final options = Options(headers: extraHeaders ?? {});
       final response = isPost
@@ -208,6 +252,9 @@ class BilibiliAPI {
           data[unwrapKey] == null) {
         _logger.info(
             '_callAPI returning null: code=${data['code']} unwrapKey=$unwrapKey hasData=${data[unwrapKey] != null}');
+        // 登录态失效信号（-101 + 本地持有 SESSDATA）：标记过期，
+        // 避免上层以缓存 myInfo 拼出假登录态（收藏夹静默清空、收藏无响应）
+        _notifySessionInvalid(data['code']);
         return null;
       }
       data = data[unwrapKey];
@@ -238,20 +285,30 @@ class BilibiliAPI {
     List<T> ret = [];
     int pn = 1;
     dynamic data;
-    do {
+    while (true) {
       data = await _callAPI(url,
           queryParameters: {...?queryParameters, ...params(pn)});
       if (data == null) {
         return null;
       }
-      final pageItems = extract(data);
-      // 空页即终止：hasMoreCheck 依赖的计数若包含失效内容（B 站
-      // media_count 计失效条目而 medias 不返回），继续翻页只会
-      // 反复请求空数据甚至死循环
-      if (pageItems.isEmpty) break;
-      ret.addAll(pageItems);
+      bool more;
+      try {
+        final pageItems = extract(data);
+        // 空页即终止：hasMoreCheck 依赖的计数若包含失效内容（B 站
+        // media_count 计失效条目而 medias 不返回），继续翻页只会
+        // 反复请求空数据甚至死循环
+        if (pageItems.isEmpty) break;
+        ret.addAll(pageItems);
+        more = hasMoreCheck(data, ret.length);
+      } catch (e) {
+        // 响应结构异常（风控页/字段类型变化）时不让错误穿透到 UI：
+        // 已积累的内容照常返回，首页就坏则视为本次请求失败
+        _logger.warning('_callAPIMultiPage parse failed: $e');
+        return ret.isEmpty ? null : ret;
+      }
+      if (!more) break;
       ++pn;
-    } while (hasMoreCheck(data, ret.length));
+    }
     return ret;
   }
 
@@ -879,7 +936,11 @@ class BilibiliAPI {
 
   /// 申请 TV 端二维码（带 appkey 签名）；成功后登录态含 access_token，支持高画质
   Future<TvQrLoginInfo?> getTvQrcodeLoginInfo() async {
-    if (noNetwork) return null;
+    if (noNetwork &&
+        !(_enableConnectivity && await connectionService.recheck())) {
+      return null;
+    }
+    noNetwork = false;
     final params = BiliSign.signForTv({
       'appkey': BiliSign.tvAppKey,
       'local_id': '0',

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:bmsc/component/recent_listening_grid.dart';
 import 'package:bmsc/component/section_header.dart';
 import 'package:bmsc/component/track_tile.dart';
@@ -7,6 +9,7 @@ import 'package:bmsc/model/local_track.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/local_music_service.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/util/string.dart' as str_util;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -40,6 +43,12 @@ class FavScreenState extends State<FavScreen> {
   List<Fav> favList = [];
   List<Fav> collectedFavList = [];
   Set<int>? hideFav;
+
+  /// 运行中登录态失效（如收藏操作触发 -101）时刷新到过期视图
+  BilibiliService? _bs;
+  VoidCallback? _sessionExpiredListener;
+
+  bool get sessionExpired => _bs?.sessionExpired.value ?? false;
 
   /// 各收藏夹的本地缓存封面（供网格拼贴缩略图），键为收藏夹 id
   Map<int, List<String>> favCovers = {};
@@ -84,8 +93,17 @@ class FavScreenState extends State<FavScreen> {
     DatabaseManager.localMusicVersion.addListener(_onLocalMusicChanged);
     _loadLocalPreview();
     BilibiliService.instance.then((x) {
+      if (!mounted) return;
+      _bs = x;
+      _sessionExpiredListener = () {
+        if (!mounted) return;
+        setState(() {
+          signedin = _isSignedIn(x);
+        });
+      };
+      x.sessionExpired.addListener(_sessionExpiredListener!);
       setState(() {
-        signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+        signedin = _isSignedIn(x);
       });
       if (signedin) {
         loadFavorites(local: true);
@@ -101,8 +119,19 @@ class FavScreenState extends State<FavScreen> {
     _loadLocalPreview();
   }
 
+  /// 登录态综合判定：有缓存 mid 且会话未失效（-101 过期信号）。
+  /// 过期后不再以缓存 myInfo 撑起假登录态（收藏夹列表被匿名空
+  /// 列表顶掉、收藏操作全部无响应）
+  bool _isSignedIn(BilibiliService x) =>
+      x.myInfo?.mid != null &&
+      x.myInfo?.mid != 0 &&
+      !x.sessionExpired.value;
+
   @override
   void dispose() {
+    if (_bs != null && _sessionExpiredListener != null) {
+      _bs!.sessionExpired.removeListener(_sessionExpiredListener!);
+    }
     DatabaseManager.favListVersion.removeListener(_onFavListChanged);
     DatabaseManager.localMusicVersion.removeListener(_onLocalMusicChanged);
     super.dispose();
@@ -120,6 +149,8 @@ class FavScreenState extends State<FavScreen> {
 
   /// 点击预览条目：以完整曲库为队列从该曲开始播放
   Future<void> _playLocalTrack(int index) async {
+    // 习惯学习：本次进入 App 首个主页板块播放的来源
+    unawaited(SectionHabitService.recordPlaySource(kHomeSectionLocal));
     final tracks = await LocalMusicService.getTracks();
     if (index >= tracks.length) return;
     final service = await AudioService.instance;
@@ -132,7 +163,7 @@ class FavScreenState extends State<FavScreen> {
     final x = await BilibiliService.instance;
     if (!mounted) return;
     setState(() {
-      signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+      signedin = _isSignedIn(x);
     });
     if (signedin) {
       loadFavorites(local: true);
@@ -468,7 +499,7 @@ class FavScreenState extends State<FavScreen> {
       body: !signedin
           ? CustomScrollView(
               slivers: [
-                // 未登录：B 站相关板块收起为登录引导，
+                // 未登录/登录已过期：B 站相关板块收起为登录引导，
                 // 本地音乐板块不受影响（本地播放无需账号）
                 SliverToBoxAdapter(
                   child: SizedBox(
@@ -493,23 +524,32 @@ class FavScreenState extends State<FavScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.lock_outline,
-                                  size: 48, color: Colors.grey),
+                              Icon(
+                                sessionExpired
+                                    ? Icons.error_outline
+                                    : Icons.lock_outline,
+                                size: 48,
+                                color: sessionExpired
+                                    ? Theme.of(context).colorScheme.error
+                                    : Colors.grey,
+                              ),
                               const SizedBox(height: 12),
                               Text(
-                                '请先登录',
+                                sessionExpired ? '登录已过期' : '请先登录',
                                 style: TextStyle(
                                   fontSize: 16,
-                                  color:
-                                      Theme.of(context).colorScheme.secondary,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .secondary,
                                 ),
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '点击登录',
+                                sessionExpired ? '点击重新登录' : '点击登录',
                                 style: TextStyle(
                                   fontSize: 13,
-                                  color: Theme.of(context).colorScheme.primary,
+                                  color:
+                                      Theme.of(context).colorScheme.primary,
                                 ),
                               ),
                             ],
@@ -607,9 +647,11 @@ class FavScreenState extends State<FavScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '进入曲库',
-                  style: TextStyle(fontSize: 13, color: scheme.secondary),
+                Flexible(
+                  child: Text(
+                    '进入曲库',
+                    style: TextStyle(fontSize: 13, color: scheme.secondary),
+                  ),
                 ),
                 Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
               ],
@@ -617,7 +659,8 @@ class FavScreenState extends State<FavScreen> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute<Widget>(
-                  builder: (_) => const LocalMusicScreen()),
+                  builder: (_) =>
+                      const LocalMusicScreen(homeSection: kHomeSectionLocal)),
             ).then((_) => _loadLocalPreview()),
           ),
           sliver: SliverToBoxAdapter(child: _buildLocalPreview(scheme)),
@@ -637,7 +680,8 @@ class FavScreenState extends State<FavScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute<Widget>(
-                builder: (_) => const LocalMusicScreen()),
+                builder: (_) =>
+                    const LocalMusicScreen(homeSection: kHomeSectionLocal)),
           ).then((_) => _loadLocalPreview()),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -809,9 +853,11 @@ class FavScreenState extends State<FavScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '基于收藏夹的推荐',
-                  style: TextStyle(fontSize: 13, color: scheme.secondary),
+                Flexible(
+                  child: Text(
+                    '基于收藏夹的推荐',
+                    style: TextStyle(fontSize: 13, color: scheme.secondary),
+                  ),
                 ),
                 Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
               ],
@@ -864,7 +910,10 @@ class FavScreenState extends State<FavScreen> {
     final cellWidth = (MediaQuery.sizeOf(context).width - 48 - spacing * 2) / 3;
     final coverHeight =
         (cellWidth - _favCoverStackStep * 2) * 9 / 16 + _favCoverStackStep * 2;
-    final cellHeight = coverHeight + 4 + 30 + 14;
+    // 文字区预算随系统字体缩放（标题 2 行 + 计数 1 行 + 少量余量），
+    // 固定预算在系统大字体下会溢出（分屏/小窗同理）
+    final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+    final cellHeight = coverHeight + 4 + 46 * textScale;
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
       sliver: SliverGrid.builder(
@@ -892,6 +941,9 @@ class FavScreenState extends State<FavScreen> {
             builder: (context) => FavDetailScreen(
               fav: fav,
               isCollected: !isOwned,
+              // 板块归因：详情页内的播放记到所属主页板块（习惯学习）
+              homeSection:
+                  isOwned ? kHomeSectionMine : kHomeSectionCollected,
             ),
           ),
         );
@@ -920,6 +972,10 @@ class FavScreenState extends State<FavScreen> {
                     ),
                     Text(
                       '${fav.mediaCount} 个视频',
+                      // 窄窗（分屏/小窗）下禁止换行：格高固定，
+                      // 换行会把 cell 内容顶出底部
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 10, color: scheme.secondary),
                     ),
                   ],
@@ -1048,6 +1104,9 @@ class FavScreenState extends State<FavScreen> {
                 title: const Text('添加到播放列表'),
                 onTap: () async {
                   Navigator.pop(context);
+                  // 习惯学习：主页「我的收藏夹」板块直接发起的播放
+                  unawaited(SectionHabitService.recordPlaySource(
+                      kHomeSectionMine));
                   final bvids = await DatabaseManager.getCachedFavBvids(fav.id);
                   if (!context.mounted) return;
                   if (bvids.isEmpty) {

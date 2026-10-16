@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -8,6 +9,8 @@ import '../database_manager.dart';
 import '../model/play_stat.dart';
 import '../screen/local_history_screen.dart';
 import '../service/audio_service.dart';
+import '../service/section_habit_service.dart';
+import '../service/shared_preferences_service.dart';
 import '../util/recent_picks.dart';
 import 'section_header.dart';
 
@@ -99,7 +102,9 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
                   // 注意每页内部还有 _spacing 水平内边距（翻页间隙），
                   // 故格宽需减去 4 倍 _spacing
                   final cellWidth = (constraints.maxWidth - _spacing * 4) / 3;
-                  final cellHeight = cellWidth * 9 / 16 + 4 + 30;
+                  // 两行标题预算随系统字体缩放（固定值在大字体下溢出）
+                  final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+                  final cellHeight = cellWidth * 9 / 16 + 4 + 32 * textScale;
                   // 高度按实际行数：不足一整页（9 个）时不预留满 3 行，
                   // 避免网格下方出现大段空白；多页时首页总是满 3 行
                   final rows = _items.length >= _pageSize
@@ -188,13 +193,17 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
       borderRadius: BorderRadius.circular(8),
       // B 站曲目：定位到上次听到的分 P（play_stat.last_cid）续播，
       // 旧数据无记录时从 P1 开始；本地音乐曲目直接单曲续播
-      onTap: () => AudioService.instance.then((x) {
-        if (stat.isLocal) {
-          final localId = int.tryParse(stat.bvid.substring(6));
-          if (localId != null) return x.playLocalTrackById(localId);
-        }
-        return x.playByBvid(stat.bvid, preferCid: stat.lastCid);
-      }),
+      onTap: () {
+        // 习惯学习：本次进入 App 首个主页板块播放的来源
+        unawaited(SectionHabitService.recordPlaySource(kHomeSectionRecent));
+        AudioService.instance.then((x) {
+          if (stat.isLocal) {
+            final localId = int.tryParse(stat.bvid.substring(6));
+            if (localId != null) return x.playLocalTrackById(localId);
+          }
+          return x.playByBvid(stat.bvid, preferCid: stat.lastCid);
+        });
+      },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

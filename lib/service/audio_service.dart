@@ -15,6 +15,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/util/silent_audio.dart';
+import 'package:bmsc/util/weighted_shuffle.dart';
 import 'package:rxdart/rxdart.dart';
 
 final _logger = LoggerUtils.getLogger('AudioService');
@@ -24,10 +25,19 @@ final _logger = LoggerUtils.getLogger('AudioService');
 /// [DefaultShuffleOrder.insert] 把新源**随机散插**进随机序——本应用
 /// 的队列解析流程会在播放中不断把 dummy 替换为真实源（点击、预解析、
 /// 下载完成换源、切音质），每次替换都会重掷「下一首」：预解析好的
-/// 曲目并不是实际接下来播放的那首，多 P 视频的各分 P 也被打散，
-/// 随机模式下顺序反复无常。本实现默认行为与 DefaultShuffleOrder 一致
-///（随机散插），但替换式插入可通过 [anchorAfter] 锚定：新源按顺序
-/// 紧随被替换项在随机序中的位置，其随机序槽位保持不变。
+/// 曲目并不是实际接下来播放的那首，随机模式下顺序反复无常。本实现
+/// 默认行为与 DefaultShuffleOrder 一致（随机散插），但替换式插入
+/// 可通过锚定保持被替换项的随机序槽位：
+/// - [anchorAfter]：全部新源紧随槽位连续占位（1:1 换源/切音质）
+/// - [anchorFirstAfter]：仅**首个**新源占据槽位，其余按权重散插——
+///   dummy 解析展开为多分 P 时，入口分 P 占住槽位使「下一首」不变，
+///   其余分 P 随机散落（分 P 也随机）
+///
+/// 抽取按 [weightOfIndex] 提供的权重加权（算法见
+/// util/weighted_shuffle.dart）：dummy 在解析时会展开为多个分 P，
+/// 其权重为内部分 P 数而非单个分 P——多 P 视频整体的抽中概率等于
+/// 同等数量的单曲之和。dummy 占 1 个随机序槽位（权重 N）；解析展开
+/// 为 N 个真实源后每源权重 1（合计 N），替换前后总权重自洽。
 class AnchoredShuffleOrder extends ShuffleOrder {
   // 必须直接暴露可变列表（与 DefaultShuffleOrder 一致）：just_audio 的
   // _toMessage() 会把该列表的引用传给平台消息，应用的自定义后台
@@ -37,24 +47,38 @@ class AnchoredShuffleOrder extends ShuffleOrder {
   @override
   final indices = <int>[];
 
-  final _random = Random();
+  final Random _random;
   int? _anchorAfter;
+  bool _anchorFirstOnly = false;
+
+  AnchoredShuffleOrder({Random? random}) : _random = random ?? Random();
+
+  /// 各项的随机抽取权重（按 playlist 下标取）；未设置一律按 1。
+  /// just_audio 先更新 playlist.children 再回调本类的 insert（见
+  /// ConcatenatingAudioSource.insertAll），回调可安全同步读源信息。
+  int Function(int playlistIndex)? weightOfIndex;
+
+  int _weightOf(int playlistIndex) => weightOfIndex?.call(playlistIndex) ?? 1;
 
   /// 下一次 [insert] 的新源在随机序中紧随 [playlistIndex]（被替换的
   /// dummy/旧源）之后按序占位。一次性：首个 insert 消费后失效。
   void anchorAfter(int playlistIndex) => _anchorAfter = playlistIndex;
 
+  /// 同 [anchorAfter]，但只有第一个新源锚定占据槽位，其余新源按
+  /// 权重散插进随机序。一次性：首个 insert 消费后失效。
+  void anchorFirstAfter(int playlistIndex) {
+    _anchorAfter = playlistIndex;
+    _anchorFirstOnly = true;
+  }
+
   @override
   void shuffle({int? initialIndex}) {
     if (indices.length <= 1) return;
-    indices.shuffle(_random);
-    if (initialIndex == null) return;
-    const initialPos = 0;
-    final swapPos = indices.indexOf(initialIndex);
-    if (swapPos < 0) return;
-    final swapIndex = indices[initialPos];
-    indices[initialPos] = initialIndex;
-    indices[swapPos] = swapIndex;
+    final shuffled = weightedPermutation(indices, _weightOf, _random,
+        initialIndex: initialIndex);
+    indices
+      ..clear()
+      ..addAll(shuffled);
   }
 
   @override
@@ -67,20 +91,37 @@ class AnchoredShuffleOrder extends ShuffleOrder {
     }
     final newIndices = List.generate(count, (i) => index + i);
     final anchor = _anchorAfter;
+    final anchorFirst = _anchorFirstOnly;
     _anchorAfter = null;
+    _anchorFirstOnly = false;
     if (anchor != null) {
       // 锚定插入：紧随锚点（插入点前一项，即被替换的 dummy/旧源）
-      // 的随机序位置之后按序排布，替换后新源占据原槽位，随机序不变
+      // 的随机序位置之后排布，替换后新源占据原槽位，随机序不变
       final pos = indices.indexOf(anchor);
       if (pos >= 0) {
-        indices.insertAll(pos + 1, newIndices);
+        if (anchorFirst) {
+          // 仅首个新源（dummy 解析的入口分 P）占住槽位：
+          // 「下一首」不变；其余分 P 散插——分 P 也随机
+          indices.insert(pos + 1, newIndices.first);
+          for (final newIndex in newIndices.skip(1)) {
+            indices.insert(
+                weightedInsertionIndex(
+                    indices, _weightOf(newIndex), _weightOf, _random),
+                newIndex);
+          }
+        } else {
+          indices.insertAll(pos + 1, newIndices);
+        }
         return;
       }
     }
-    // 默认与 DefaultShuffleOrder 相同：随机散插
+    // 默认散插：按权重选位（与 weightedPermutation 同分布；
+    // DefaultShuffleOrder 为均匀散插，此处为其加权推广）
     for (final newIndex in newIndices) {
-      final insertionIndex = _random.nextInt(indices.length + 1);
-      indices.insert(insertionIndex, newIndex);
+      indices.insert(
+          weightedInsertionIndex(
+              indices, _weightOf(newIndex), _weightOf, _random),
+          newIndex);
     }
   }
 
@@ -100,6 +141,7 @@ class AnchoredShuffleOrder extends ShuffleOrder {
   void clear() {
     indices.clear();
     _anchorAfter = null;
+    _anchorFirstOnly = false;
   }
 }
 
@@ -182,6 +224,7 @@ class AudioService {
 
   static Future<AudioService> _init() async {
     final x = AudioService();
+    x._playlistShuffleOrder.weightOfIndex = x._weightOfPlaylistIndex;
     try {
       final restored = await SharedPreferencesService.getPlaylist();
       if (restored != null) {
@@ -261,7 +304,6 @@ class AudioService {
     } catch (e) {
       _logger.severe('AudioService._init: session setup failed', e);
     }
-    await x.hookEvents();
     // 注册缓存清理保护：正在播放的本地缓存文件不被删除（iOS 经本地代理
     // 流式读文件，删除会立即中断播放）
     DatabaseManager.cacheFileGuard = () async {
@@ -460,6 +502,24 @@ class AudioService {
     return true;
   }
 
+  /// 队列项的随机抽取权重：dummy 为其内部分 P 数（一个 dummy 槽位
+  /// 在解析时会展开为多个分 P，权重不应等于单个分 P）；真实源与本地
+  /// 曲目恒为 1。分 P 数来自 dummy tag 中的 meta 缓存（未缓存/未知
+  /// 按 1 退化为原行为；跳过排除的分 P 不另扣减——排除是少数情况，
+  /// 权重作近似即可）。
+  int _weightOfPlaylistIndex(int playlistIndex) {
+    final children = playlist.children;
+    if (playlistIndex < 0 || playlistIndex >= children.length) return 1;
+    final child = children[playlistIndex];
+    if (child is! IndexedAudioSource) return 1;
+    final tag = child.tag;
+    if (tag is! MediaItem) return 1;
+    final extras = tag.extras;
+    if (extras == null || extras['dummy'] != true) return 1;
+    final parts = extras['parts'];
+    return parts is int && parts > 1 ? parts : 1;
+  }
+
   Future<UriAudioSource> getDummyAudioSource(Meta x) async {
     final silenceUri = await resolveSilentAudioUri();
     return AudioSource.uri(silenceUri,
@@ -470,7 +530,13 @@ class AudioService {
             artUri: Uri.http(x.artUri.substring(7, 19), x.artUri.substring(19)),
             artist: x.artist,
             duration: Duration(seconds: x.duration),
-            extras: {'dummy': true}));
+            extras: {
+              'dummy': true,
+              // 随机播放权重：dummy 解析时将展开为 parts 个分 P
+              //（见 AnchoredShuffleOrder.weightOfIndex）；
+              // 未知/单 P 不携带，按权重 1 处理
+              if (x.parts != null && x.parts! > 1) 'parts': x.parts,
+            }));
   }
 
   Future<void> restorePlayMode() async {
@@ -486,6 +552,9 @@ class AudioService {
 
   Future<void> setInterrupHandler(bool value) async {
     if (value) {
+      // 重入（开关再开）时旧订阅未取消会叠监听，duck/暂停/恢复逻辑
+      // 被执行两遍
+      await _interruptionEventSubscription?.cancel();
       _interruptionEventSubscription =
           session.interruptionEventStream.listen((event) {
         if (event.begin) {
@@ -534,7 +603,7 @@ class AudioService {
   }
 
   Future<void> hookEvents() async {
-    try {
+     try {
       setInterrupHandler(await SharedPreferencesService.getReactToInterruption());
       session.becomingNoisyEventStream.listen((_) {
         player.pause();
@@ -622,16 +691,6 @@ class AudioService {
         _stopPlayPositionSaving();
       }
 
-      if (state.processingState == ProcessingState.ready) {
-        final index = player.currentIndex;
-        if (index == null) {
-          return;
-        }
-        if (state.playing == false) {
-          return;
-        }
-        _historyUpdateCnt = 0;
-      }
     });
 
     // iOS 卡死看门狗：playing=true 但进度恒为 0（AVQueuePlayer 队列卡死，
@@ -653,11 +712,12 @@ class AudioService {
         final source = player.sequenceState.currentSource;
         final extras = source?.tag?.extras;
         // 本地文件源不走看门狗：_unwedgeCurrentSourceIOS 只处理
-        // LazyAudioSource，本地文件也不存在代理卡死场景
+        // LazyAudioSource，本地文件也不存在代理卡死场景；换源后的
+        // 缓存文件源（UriAudioSource）同样直接跳过
         if (source == null ||
             extras == null ||
             extras['dummy'] == true ||
-            extras['local'] == true) {
+            source is! LazyAudioSource) {
           _watchdogStallTicks = 0;
           return;
         }
@@ -670,12 +730,13 @@ class AudioService {
         _watchdogStallTicks++;
         if (_watchdogStallTicks >= 4 &&
             !_watchdogUnwedgedSources.contains(source)) {
-          _watchdogUnwedgedSources.add(source);
           _watchdogStallTicks = 0;
           final idx = player.currentIndex;
           _logger.warning(
               'watchdog: playing but stuck at 0 for 20s, replace source at index=$idx');
           if (idx != null) {
+            // 「已救过」标记在施救真正开始后才打（见函数内），
+            // 提前打标会让早退的源从此被看门狗永久解除武装
             _unwedgeCurrentSourceIOS(idx, source);
           }
         }
@@ -725,70 +786,78 @@ class AudioService {
   /// 自动推进竞态。旧源进行中的下载先取消，避免与新源写同一 .part。
   Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) async {
     if (source is! LazyAudioSource) return;
-    // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更
+    // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更：
+    // 先取锁后 await——此前先 await（cancelDownload/localFile）再置位，
+    // 窗口期内解析/换源可正常取锁，看门狗 await 返回后复核只查源身份
+    // 不查锁，双方并发 insertAll/removeAt 会把 playlist 改坏
     if (_hijacking || _swapping) return;
-    final tag = source.tag;
-    if (tag is! MediaItem) return;
-    final extras = tag.extras;
-    final bvid = extras?['bvid'];
-    final cid = extras?['cid'];
-    if (bvid == null || cid == null) return;
-    final position = player.position;
-    final wasPlaying = player.playing;
-    await source.cancelDownload();
-    final file = await source.localFile;
-    // 复核时效性：cancelDownload 的 await 窗口内用户可能已切歌/队列
-    // 可能已推进——旧源不再是当前项时放弃解卡，绝不把播放强拽回旧曲目；
-    // 插入点也用旧源身份现查，不用捕获的固定 index。
-    final curIdx = _indexOfInPlaylist(source);
-    if (curIdx == null ||
-        !identical(player.sequenceState.currentSource, source)) {
-      _logger.warning('watchdog: source no longer current, abort unwedge');
-      return;
-    }
-    final fresh = LazyAudioSource(
-      bvid,
-      cid,
-      localFile: file.existsSync() ? file : null,
-      tag: tag,
-    );
-    // 切音质待恢复的位置迁移到克隆源：原源被解卡替换后，克隆源换源时
-    // 仍能恢复切音质时记录的位置。
-    final pending = _pendingSeekPositions.remove(source);
-    if (pending != null) {
-      _pendingSeekPositions[fresh] = pending;
-    }
-    // 克隆体继承「已救过」标记：慢网络下若克隆体仍无进展，不再反复
-    // 重载；一旦有播放进展，标记会被看门狗清除并重新武装。
-    _watchdogUnwedgedSources.add(fresh);
     _hijacking = true;
     _swapping = true;
     try {
-      _playlistShuffleOrder.anchorAfter(curIdx);
-      await doAndSavePlaylist(() async {
-        await playlist.insertAll(curIdx + 1, [fresh]);
-      });
-      // 同 swap：不能用固定 index+1（推进会导致 seek 落到下一P
-      // ——下一P继承本P进度），一律 identical 定位。
-      final insertIdx = _indexOfInPlaylist(fresh);
-      if (insertIdx != null) {
-        try {
-          await player
-              .seek(position, index: insertIdx)
-              .timeout(const Duration(seconds: 5));
-        } catch (e) {
-          _logger.warning('watchdog unwedge seek failed: $e');
-        }
-        if (wasPlaying) await player.play();
-      } else {
-        _logger.warning('watchdog: fresh source vanished from playlist');
+      final tag = source.tag;
+      if (tag is! MediaItem) return;
+      final extras = tag.extras;
+      final bvid = extras?['bvid'];
+      final cid = extras?['cid'];
+      if (bvid == null || cid == null) return;
+      final position = player.position;
+      final wasPlaying = player.playing;
+      await source.cancelDownload();
+      final file = await source.localFile;
+      // 复核时效性：cancelDownload 的 await 窗口内用户可能已切歌/队列
+      // 可能已推进——旧源不再是当前项时放弃解卡，绝不把播放强拽回旧曲目；
+      // 插入点也用旧源身份现查，不用捕获的固定 index。
+      final curIdx = _indexOfInPlaylist(source);
+      if (curIdx == null ||
+          !identical(player.sequenceState.currentSource, source)) {
+        _logger.warning('watchdog: source no longer current, abort unwedge');
+        return;
       }
-      await doAndSavePlaylist(() async {
-        final oldIdx = _indexOfInPlaylist(source);
-        if (oldIdx != null) await playlist.removeAt(oldIdx);
-      });
-    } catch (e) {
-      _logger.warning('watchdog unwedge failed: $e');
+      // 「已救过」标记只在施救真正开始时打上：调用方若在锁被占用
+      // 时打标，早退的源会被看门狗永久解除武装
+      _watchdogUnwedgedSources.add(source);
+      final fresh = LazyAudioSource(
+        bvid,
+        cid,
+        localFile: file.existsSync() ? file : null,
+        tag: tag,
+      );
+      // 切音质待恢复的位置迁移到克隆源：原源被解卡替换后，克隆源换源时
+      // 仍能恢复切音质时记录的位置。
+      final pending = _pendingSeekPositions.remove(source);
+      if (pending != null) {
+        _pendingSeekPositions[fresh] = pending;
+      }
+      // 克隆体继承「已救过」标记：慢网络下若克隆体仍无进展，不再反复
+      // 重载；一旦有播放进展，标记会被看门狗清除并重新武装。
+      _watchdogUnwedgedSources.add(fresh);
+      try {
+        _playlistShuffleOrder.anchorAfter(curIdx);
+        await doAndSavePlaylist(() async {
+          await playlist.insertAll(curIdx + 1, [fresh]);
+        });
+        // 同 swap：不能用固定 index+1（推进会导致 seek 落到下一P
+        // ——下一P继承本P进度），一律 identical 定位。
+        final insertIdx = _indexOfInPlaylist(fresh);
+        if (insertIdx != null) {
+          try {
+            await player
+                .seek(position, index: insertIdx)
+                .timeout(const Duration(seconds: 5));
+          } catch (e) {
+            _logger.warning('watchdog unwedge seek failed: $e');
+          }
+          if (wasPlaying) await player.play();
+        } else {
+          _logger.warning('watchdog: fresh source vanished from playlist');
+        }
+        await doAndSavePlaylist(() async {
+          final oldIdx = _indexOfInPlaylist(source);
+          if (oldIdx != null) await playlist.removeAt(oldIdx);
+        });
+      } catch (e) {
+        _logger.warning('watchdog unwedge failed: $e');
+      }
     } finally {
       _hijacking = false;
       _swapping = false;
@@ -1192,6 +1261,10 @@ class AudioService {
     // 插入/删除让 sequenceState 反复错位，真机实测级联在数秒内解析了
     // 44 个视频的整个队列并使播放条反复跳变）
     if (isCurrentChanged) {
+      // 播放计数的 tick 起点随真实切歌重置：原先在 playerState
+      // ready&&playing 事件上清零，暂停/恢复、卡顿恢复都会再次触发，
+      // 每次恢复播放 playCount 都被多计 1
+      _historyUpdateCnt = 0;
       _schedulePreResolveAhead();
     }
   }
@@ -1266,6 +1339,13 @@ class AudioService {
         }
         return;
       }
+      // 分 P 也随机：随机模式下打乱分 P 顺序——入口分 P（打乱后首个）
+      // 锚定占据 dummy 的随机序槽位（「下一首」不变），其余分 P 散插
+      // 进随机序（见 AnchoredShuffleOrder.anchorFirstAfter）；
+      // 非随机模式保持 P1..PN 原序连播（专辑语义）
+      if (player.shuffleModeEnabled && srcs.length > 1) {
+        srcs.shuffle();
+      }
       if (identical(player.sequenceState.currentSource, dummy)) {
         // 兜底路径：dummy 已成为当前播放项（用户直接跳转/预解析未及时
         // 覆盖），用 iOS 安全顺序替换（先插→显式跳→再删）。
@@ -1323,8 +1403,9 @@ class AudioService {
     await doAndSavePlaylist(() async {
       final dummyIdx = _indexOfInPlaylist(dummy);
       if (dummyIdx == null) return;
-      // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
-      _playlistShuffleOrder.anchorAfter(dummyIdx);
+      // 入口分 P 锚定占据 dummy 的随机序槽位（替换不重掷「下一首」），
+      // 其余分 P 散插进随机序（分 P 也随机）
+      _playlistShuffleOrder.anchorFirstAfter(dummyIdx);
       await playlist.insertAll(dummyIdx + 1, srcs);
       // insertAll 的 await 窗口内自然推进/用户跳转可能使 dummy 刚成为当前项
       if (identical(player.sequenceState.currentSource, dummy)) {
@@ -1367,8 +1448,10 @@ class AudioService {
           if (isShuffle) await player.setShuffleModeEnabled(true);
           return;
         }
-        // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
-        _playlistShuffleOrder.anchorAfter(dummyIdx);
+        // 入口分 P 锚定占据 dummy 的随机序槽位（替换不重掷「下一首」），
+        // 其余分 P 散插进随机序（分 P 也随机）；本路径结尾重新开启
+        // shuffle 会整体重排，锚定与否无实际差异，仅为语义一致
+        _playlistShuffleOrder.anchorFirstAfter(dummyIdx);
         await playlist.insertAll(dummyIdx + 1, srcs);
       }
       // shuffle/insert 的 await 窗口内用户可能已跳到其他曲目或 dummy 已
@@ -1498,6 +1581,9 @@ class AudioService {
     for (final meta in metas) {
       srcs.add(await getDummyAudioSource(meta));
     }
+    // 部分 bvid 缺元数据时 srcs 短于 bvids：钳制防 seek 越界
+    //（playLocalTracks 已有同款钳制）
+    if (index >= srcs.length) index = 0;
     await player.pause();
     // 等在途的解析/换源/预解析变更完成再换队列：原实现直接覆写
     // _hijacking 旗标，与在途变更并发执行 clear/addAll 会互相改坏队列
@@ -1599,7 +1685,10 @@ class AudioService {
               .firstWhere((s) => s == ProcessingState.ready)
               .timeout(const Duration(seconds: 5));
           await player.seek(Duration.zero, index: index);
-        } catch (_) {}
+        } catch (e) {
+          // 超时/seek 失败：表现为「点第 N 首播第 1 首」，此前静默无迹
+          _logger.warning('playLocalTracks retry seek failed: $e');
+        }
       }
     } finally {
       _hijacking = false;
@@ -1672,13 +1761,19 @@ class AudioService {
   /// 若被索引监听误当真实切歌处理，会把统计/预解析打到错误曲目上
   ///（幻影事件，真机实测会连锁解析整个队列）。已在 _hijacking 内执行
   /// 的内部流程不应使用本方法（会等自己）。
-  Future<void> mutatePlaylist(Future<void> Function() func) async {
+  Future<bool> mutatePlaylist(Future<void> Function() func) async {
     final lockAcquired = await _waitMutationFree();
-    if (lockAcquired) _hijacking = true;
+    if (!lockAcquired) {
+      // 超时后无锁执行正是互斥要防的改坏场景：宁可放弃这次变更
+      _logger.warning('mutation timeout, aborting playlist mutation');
+      return false;
+    }
+    _hijacking = true;
     try {
       await doAndSavePlaylist(func);
+      return true;
     } finally {
-      if (lockAcquired) _hijacking = false;
+      _hijacking = false;
     }
   }
 
@@ -1702,42 +1797,46 @@ class AudioService {
       {int? insertIndex, Map<String, dynamic>? extraExtras}) async {
     int? ret;
     final uniqueSources = <IndexedAudioSource>[];
-    for (var source in sources) {
-      if (source.tag is! MediaItem) {
-        continue;
-      }
-      final mediaItem = source.tag as MediaItem;
-      final duplicatePos = playlist.children.indexWhere((child) =>
-          child is IndexedAudioSource &&
-          child.tag is MediaItem &&
-          _isSameMedia(child.tag as MediaItem, mediaItem));
-      final pendingPos = uniqueSources.indexWhere((child) =>
-          child.tag is MediaItem &&
-          _isSameMedia(child.tag as MediaItem, mediaItem));
-
-      if (duplicatePos == -1 && pendingPos == -1) {
-        if (extraExtras != null) {
-          mediaItem.extras?.addAll(extraExtras);
-        }
-        uniqueSources.add(source);
-        ret ??= insertIndex != null
-            ? insertIndex + uniqueSources.length - 1
-            : playlist.length + uniqueSources.length - 1;
-      } else if (duplicatePos != -1) {
-        ret = duplicatePos;
-      } else {
-        ret ??= insertIndex != null
-            ? insertIndex + pendingPos
-            : playlist.length + pendingPos;
-      }
+    // 去重与插入位置必须在持锁状态下基于当时的队列计算：锁外基于
+    // 取锁前快照去重/定位，等待窗口内解析/预解析的插入删除会使结果
+    // 错位（多 P 点播跳到错误分 P/曲目的历史 bug 同族）
+    if (!await _waitMutationFree()) {
+      _logger.warning('mutation timeout, aborting addUniqueSources');
+      return null;
     }
-    if (uniqueSources.isNotEmpty) {
-      final index = insertIndex;
-      // 插入也持有变更互斥：插入期间的 sequenceState 错位映射若被索引
-      // 监听当真实切歌处理，会把统计/预解析打到插入的曲目上
-      final lockAcquired = await _waitMutationFree();
-      if (lockAcquired) _hijacking = true;
-      try {
+    _hijacking = true;
+    try {
+      for (var source in sources) {
+        if (source.tag is! MediaItem) {
+          continue;
+        }
+        final mediaItem = source.tag as MediaItem;
+        final duplicatePos = playlist.children.indexWhere((child) =>
+            child is IndexedAudioSource &&
+            child.tag is MediaItem &&
+            _isSameMedia(child.tag as MediaItem, mediaItem));
+        final pendingPos = uniqueSources.indexWhere((child) =>
+            child.tag is MediaItem &&
+            _isSameMedia(child.tag as MediaItem, mediaItem));
+
+        if (duplicatePos == -1 && pendingPos == -1) {
+          if (extraExtras != null) {
+            mediaItem.extras?.addAll(extraExtras);
+          }
+          uniqueSources.add(source);
+          ret ??= insertIndex != null
+              ? insertIndex + uniqueSources.length - 1
+              : playlist.length + uniqueSources.length - 1;
+        } else if (duplicatePos != -1) {
+          ret = duplicatePos;
+        } else {
+          ret ??= insertIndex != null
+              ? insertIndex + pendingPos
+              : playlist.length + pendingPos;
+        }
+      }
+      if (uniqueSources.isNotEmpty) {
+        final index = insertIndex;
         // 批量插入后只保存一次
         await doAndSavePlaylist(() async {
           if (index != null) {
@@ -1746,9 +1845,9 @@ class AudioService {
             await playlist.addAll(uniqueSources);
           }
         });
-      } finally {
-        if (lockAcquired) _hijacking = false;
       }
+    } finally {
+      _hijacking = false;
     }
     return ret;
   }

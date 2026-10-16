@@ -1,11 +1,14 @@
 // ignore_for_file: deprecated_member_use
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/model/myinfo.dart';
+import 'package:bmsc/model/recognition_attempt.dart';
 import 'package:bmsc/model/playlist_data.dart';
 import 'package:bmsc/util/logger.dart';
+import 'package:bmsc/util/section_habit.dart';
 import 'package:bmsc/util/silent_audio.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -14,24 +17,18 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:rxdart/subjects.dart';
 
+/// 主页板块 key 与默认顺序定义于 util/section_habit.dart（纯 Dart，
+/// 便于离线测试引用），此处原样 re-export 保持既有调用方不变
+export 'package:bmsc/util/section_habit.dart'
+    show
+        kHomeSectionDaily,
+        kHomeSectionRecent,
+        kHomeSectionMine,
+        kHomeSectionCollected,
+        kHomeSectionLocal,
+        kDefaultHomeSectionOrder;
+
 final _logger = LoggerUtils.getLogger('SharedPreferencesService');
-
-/// 主页板块 key（排序偏好的存储值）
-const String kHomeSectionDaily = 'daily';
-const String kHomeSectionRecent = 'recent';
-const String kHomeSectionMine = 'mine';
-const String kHomeSectionCollected = 'collected';
-const String kHomeSectionLocal = 'local';
-
-/// 主页板块默认顺序：每日推荐 → 最近在听 → 我的收藏夹 → 收藏的收藏夹 → 本地音乐
-///（新增板块对老用户自动追加到末尾，见 getHomeSectionOrder）
-const List<String> kDefaultHomeSectionOrder = [
-  kHomeSectionDaily,
-  kHomeSectionRecent,
-  kHomeSectionMine,
-  kHomeSectionCollected,
-  kHomeSectionLocal,
-];
 
 class SharedPreferencesService {
   static final instance = _instance();
@@ -122,6 +119,93 @@ class SharedPreferencesService {
     final prefs = await instance;
     // 2.0.0 起默认关闭（隐私考虑）；未设置过的用户升级后不再自动读取剪贴板
     return prefs.getBool('readFromClipboard') ?? false;
+  }
+
+  /// 听歌识曲同意（v2：录音片段会保存在本机识别历史供回放——相比 v1 的
+  /// 「不保存」承诺范围变大，需重新征得同意）
+  static Future<bool> getRecognitionConsent() async {
+    final prefs = await instance;
+    return prefs.getBool('recognition_consent_v2') ?? false;
+  }
+
+  static Future<void> setRecognitionConsent(bool value) async {
+    final prefs = await instance;
+    await prefs.setBool('recognition_consent_v2', value);
+  }
+
+  /// 识别历史：最新在前（成功/未中/静音/失败均入史），上限 50，
+  /// 兼容旧版单曲格式条目（见 RecognitionAttempt.fromStoredJson）
+  static Future<List<RecognitionAttempt>> getRecognitionHistory() async {
+    final prefs = await instance;
+    return (prefs.getStringList('recognition_history') ?? const <String>[])
+        .map((e) => RecognitionAttempt.fromStoredJson(
+            jsonDecode(e) as Map<String, dynamic>))
+        .toList();
+  }
+
+  static Future<void> addRecognitionHistory(RecognitionAttempt entry) async {
+    final prefs = await instance;
+    final list = List<String>.from(
+        prefs.getStringList('recognition_history') ?? const <String>[]);
+    list.insert(0, jsonEncode(entry.toJson()));
+    if (list.length > 50) {
+      // 容量溢出：同步清理被挤出的最旧条目的片段文件
+      for (final raw in list.sublist(50)) {
+        try {
+          final e = RecognitionAttempt.fromStoredJson(
+              jsonDecode(raw) as Map<String, dynamic>);
+          await _deleteRecognitionClip(e.clip);
+        } catch (_) {}
+      }
+      list.length = 50;
+    }
+    await prefs.setStringList('recognition_history', list);
+  }
+
+  /// 单条删除（按 at 时间戳定位，同步删除片段文件）
+  static Future<void> removeRecognitionHistory(int at) async {
+    final prefs = await instance;
+    final list = List<String>.from(
+        prefs.getStringList('recognition_history') ?? const <String>[]);
+    list.removeWhere((raw) {
+      try {
+        final e = RecognitionAttempt.fromStoredJson(
+            jsonDecode(raw) as Map<String, dynamic>);
+        if (e.at == at) {
+          unawaited(_deleteRecognitionClip(e.clip));
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    });
+    await prefs.setStringList('recognition_history', list);
+  }
+
+  static Future<void> clearRecognitionHistory() async {
+    final prefs = await instance;
+    await prefs.remove('recognition_history');
+    try {
+      final dir = Directory(
+          '${(await getApplicationDocumentsDirectory()).path}/recognition_clips');
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (_) {}
+  }
+
+  /// 试听片段完整路径（不存在返回 null）
+  static Future<String?> recognitionClipPath(String? clip) async {
+    if (clip == null) return null;
+    final f = File(
+        '${(await getApplicationDocumentsDirectory()).path}/recognition_clips/$clip');
+    return await f.exists() ? f.path : null;
+  }
+
+  static Future<void> _deleteRecognitionClip(String? clip) async {
+    if (clip == null) return;
+    try {
+      await File(
+              '${(await getApplicationDocumentsDirectory()).path}/recognition_clips/$clip')
+          .delete();
+    } catch (_) {}
   }
 
   static Future<void> setReadFromClipboard(bool value) async {
@@ -298,6 +382,8 @@ class SharedPreferencesService {
           cached: tag.extras?['cached'] ?? false,
           duration: tag.duration?.inSeconds ?? 0,
           dummy: dummy,
+          // dummy 占位源的分 P 数（随机播放权重），非 dummy 为 null
+          parts: tag.extras?['parts'],
           local: isLocal,
           filePath: isLocal ? (tag.extras?['filePath'] ?? '') : '',
           album: tag.album ?? '',
@@ -342,6 +428,8 @@ class SharedPreferencesService {
               duration: Duration(seconds: data.duration),
               extras: {
                 'dummy': true,
+                // 分 P 数随队列恢复（随机播放权重用）
+                if (data.parts != null && data.parts! > 1) 'parts': data.parts,
               },
             ));
       } else if (data.local) {

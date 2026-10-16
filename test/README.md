@@ -15,10 +15,13 @@ dart test test/unit          # 或 flutter test test/unit
 | `bili_sign_test.dart` | TV / Android-HD / Android playurl 三套签名算法（含 Python 复算的参考向量）、percent-encode（对齐 Java URLEncoder）、buvid/deviceId 身份格式、login_session_id |
 | `crypto_test.dart` | WBI mixin key 置换表（参考向量）、RSA 密码/设备凭据加密、CSRF 提取 |
 | `login_model_test.dart` | 登录响应解析（Set-Cookie + body cookie_info 合并、status=2 风控、-105 重验证、TV poll 外层 code 兜底）、风控/重验证 URL 解析、极验/腾讯验证码结构 |
-| `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
+| `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、会话失效信号（-101 + SESSDATA 才触发；未登录/-400/成功响应不触发）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
 | `feedback_test.dart` | 反馈通道 payload 组装：bilibili 凭据/Bearer token 脱敏、日志尾部截断、content trim 与空字段省略、meta 字段 |
 | `changelog_test.dart` | changelog.md 解析：版本分节顺序、多行条目合并、空行剔除、空输入、条目分组 |
 | `stats_test.dart` | 使用统计：匿名安装 ID 格式与随机性、UTC 日期（跨日界线）、每日心跳去重判断 |
+| `section_habit_test.dart` | 主页板块习惯学习：纯累计计数打分（不随时间衰减、置顶不自动下沉、累计反超迁移）、带反超阈值的相邻上浮排序（防抖/冷启动门槛/稳定性）、学习状态序列化往返与旧版本数据兼容 |
+| `weighted_shuffle_test.dart` | 加权随机播放：Efraimidis–Spirakis 加权排列（首项概率 ∝ 权重、等权退化均匀、initialIndex 首位、权重钳制）、后缀权重散插与排列的同分布一致性 |
+| `anchored_shuffle_order_test.dart` | 随机序锚定：anchorAfter 全锚定（1:1 换源）、anchorFirstAfter 入口分 P 锚定 + 其余分 P 散插（「下一首」不变式、散插随机性、锚点失效回退）、加权 shuffle 集成 |
 | `local_music_test.dart` | 本地音乐：导入文件名清理/冲突序号/封面扩展名推断、LocalTrack 与 PlaylistData（local 字段及旧版本兼容）序列化往返 |
 
 ## 2. 集成测试（真实接口、live tag、默认跳过）
@@ -67,7 +70,7 @@ BMSC_LIVE=1 BMSC_COOKIE="..." flutter test test/integration
 ## 工程约束
 
 - 测试不依赖 Flutter binding / 数据库 / 真实 SharedPreferences（`setMockInitialValues` 内存化）
-- `BilibiliAPI(enableConnectivity: false)` 跳过 connectivity 插件初始化
+- `BilibiliAPI(enableConnectivity: false)` 跳过 connectivity 初始化与探活自愈（noNetwork 为纯静态开关）
 - 网络请求一律走 `FakeHttpAdapter`（`test/helpers/fake_http_adapter.dart`）或标记 `@Tags(['live'])`
 
 ## 常用命令

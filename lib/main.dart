@@ -31,6 +31,8 @@ import 'package:bmsc/screen/settings_screen.dart';
 import 'package:bmsc/theme.dart';
 
 import 'util/string.dart';
+// ✅ 新增：引入 sqflite 的 FFI 实现，用于 Windows/Linux/macOS 桌面端
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 final _logger = LoggerUtils.getLogger('main');
 
@@ -44,6 +46,14 @@ Future<void> main() async {
     () async {
       WidgetsFlutterBinding.ensureInitialized();
       await LoggerUtils.init();
+
+      // ✅ 新增：针对桌面端（Windows/Linux/macOS）初始化数据库工厂
+      // 必须在任何数据库操作（如 DatabaseManager.sweepOrphanCacheFiles）之前执行
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        sqfliteFfiInit();
+        databaseFactory = databaseFactoryFfi;
+      }
+
       // 匿名使用统计每日心跳（默认开启，设置 → 隐私 可关），不阻塞启动
       unawaited(StatsService.maybePing());
 

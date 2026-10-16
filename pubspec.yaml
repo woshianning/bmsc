@@ -83,7 +83,7 @@ dev_dependencies:
 
 # ✅ 修正：dependency_overrides 必须和 dev_dependencies 平级（顶格写）
 dependency_overrides:
-  win32: ^5.5.4
+  win32: ^5.9.0
 
 flutter:
   assets:

@@ -81,10 +81,6 @@ dev_dependencies:
   # live 集成测试的终端二维码渲染用（纯 Dart，运行时无 UI 依赖）
   qr: ^3.0.2
 
-# ✅ 修正：dependency_overrides 必须和 dev_dependencies 平级（顶格写）
-dependency_overrides:
-  win32: ^5.9.0
-
 flutter:
   assets:
     - assets/silent.m4a

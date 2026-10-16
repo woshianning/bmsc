@@ -238,14 +238,31 @@ class AudioService {
       // 慢网络下 preload 等待首批流数据可能长时间挂起（iOS 需经 localhost
       // 代理拉流），超时放行让初始化继续，底层加载完成后播放器状态自愈。
       try {
-        await x.player
-            .setAudioSource(x.playlist,
-                preload: x.playlist.children.isNotEmpty)
-            .timeout(const Duration(seconds: 5));
-      } catch (e) {
-        _logger.warning(
-            'AudioService._init: setAudioSource failed/timeout: $e');
-      }
+  await x.player
+      .setAudioSource(x.playlist,
+          preload: x.playlist.children.isNotEmpty)
+      .timeout(const Duration(seconds: 5));
+} on UnimplementedError catch (e) {
+  if (e.toString().contains('setAutomaticallyWaitsToMinimizeStalling')) {
+    _logger.warning(
+        'AudioService._init: Windows setAutomaticallyWaitsToMinimizeStalling '
+        '未实现，忽略并重试加载');
+    // 重试：_platformActive 已为 true，第二次调用不会再触发该方法
+    try {
+      await x.player
+          .setAudioSource(x.playlist,
+              preload: x.playlist.children.isNotEmpty)
+          .timeout(const Duration(seconds: 5));
+    } catch (e2) {
+      _logger.severe('AudioService._init: retry setAudioSource failed: $e2');
+    }
+  } else {
+    rethrow;
+  }
+} catch (e) {
+  _logger.warning(
+      'AudioService._init: setAudioSource failed/timeout: $e');
+}
       final position = await SharedPreferencesService.getPlayPosition();
       if (restored != null && restored.$2 < x.playlist.length) {
         // 以下 seek 在 iOS 上曾因 AVPlayer 等待流数据而挂起，现已有

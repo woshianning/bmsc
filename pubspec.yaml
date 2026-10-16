@@ -5,7 +5,6 @@ publish_to: 'none'
 
 # this is a placeholder version, it will be replaced by the tag version in the github action
 version: 99.99.99
-compileSdkVersion: 34
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -82,9 +81,9 @@ dev_dependencies:
   # live 集成测试的终端二维码渲染用（纯 Dart，运行时无 UI 依赖）
   qr: ^3.0.2
 
-  # ✅ 新增：强制统一 win32 版本，解决 DLL 加载失败问题
-  dependency_overrides:
-    win32: ^5.5.4
+# ✅ 修正：dependency_overrides 必须和 dev_dependencies 平级（顶格写）
+dependency_overrides:
+  win32: ^5.5.4
 
 flutter:
   assets:

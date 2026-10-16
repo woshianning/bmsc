@@ -30,6 +30,9 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: update flutter_launcher_icons
+        run: flutter pub run flutter_launcher_icons
+
       - name: Build Windows (release)
         run: flutter build windows --release
 

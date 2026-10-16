@@ -25,6 +25,9 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: update flutter_launcher_icons
+        run: flutter pub run flutter_launcher_icons
+
       - name: Build macOS
         run: flutter build macos --release
 

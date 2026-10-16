@@ -56,16 +56,16 @@ dependencies:
   synchronized: ^3.3.0
   flutter_sticky_header: ^0.8.0
   audio_metadata_reader: ^1.8.0
-
+  record: ^7.1.1
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
+  windows: true
   macos:
     generate: true
   image_path: "assets/icon.png"
   adaptive_icon_background: "#ffffff"
   adaptive_icon_foreground: "assets/icon.png"
-
 
 dev_dependencies:
   # flutter_test:

@@ -14,10 +14,9 @@ dependencies:
     sdk: flutter
   dio: ^5.9.2
   just_audio: ^0.10.6
-  just_audio_windows: ^0.2.3
   just_audio_media_kit: ^2.1.0
   media_kit_libs_linux: ^1.2.1
-  media_kit_libs_windows_audio: ^1.0.9
+  just_audio_windows_plus: ^0.5.3 
   media_kit_libs_macos_audio: ^1.1.4
   sqflite_common_ffi: ^2.3.4
   # ✅ 新增：桌面端 FFI 需要打包 sqlite3 动态库
@@ -81,6 +80,9 @@ dev_dependencies:
   test: ^1.25.8
   # live 集成测试的终端二维码渲染用（纯 Dart，运行时无 UI 依赖）
   qr: ^3.0.2
+
+dependency_overrides:
+  win32: ^6.4.0
 
 flutter:
   assets:

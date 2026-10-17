@@ -2,6 +2,10 @@
 cmake_minimum_required(VERSION 3.14)
 project(bmsc LANGUAGES CXX)
 
+# ✅ 新增：解决 just_audio_windows 的 C4819 编码错误和 C2338 协程弃用错误
+add_compile_options(/utf-8)
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "bmsc")
@@ -39,7 +43,8 @@ add_definitions(-DUNICODE -D_UNICODE)
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
-  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
+  # ✅ 修改：添加 /wd4819 忽略编码警告（作为双重保险）
+  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100" /wd4819)
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")

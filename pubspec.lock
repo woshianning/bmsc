@@ -572,6 +572,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.4.16"
+  just_audio_windows_plus:
+    dependency: "direct main"
+    description:
+      name: just_audio_windows_plus
+      sha256: "9933ce11897c0ebc503d517d4341435d83bc6b92956b6b2366cc5948d67356c2"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.5.4"
   lints:
     dependency: transitive
     description:
@@ -628,14 +636,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.2.1"
-  media_kit_libs_windows_audio:
+  media_kit_libs_macos_audio:
     dependency: "direct main"
     description:
-      name: media_kit_libs_windows_audio
-      sha256: c2fd558cc87b9d89a801141fcdffe02e338a3b21a41a18fbd63d5b221a1b8e53
+      name: media_kit_libs_macos_audio
+      sha256: "3be21844df98f286de32808592835073cdef2c1a10078bac135da790badca950"
       url: "https://pub.dev"
     source: hosted
-    version: "1.0.9"
+    version: "1.1.4"
   meta:
     dependency: transitive
     description:
@@ -1193,6 +1201,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.3.1"
+  sqlite3_flutter_libs:
+    dependency: "direct main"
+    description:
+      name: sqlite3_flutter_libs
+      sha256: eeb9e3a45207649076b808f8a5a74d68770d0b7f26ccef6d5f43106eee5375ad
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.5.42"
   stack_trace:
     dependency: transitive
     description:
@@ -1426,13 +1442,13 @@ packages:
     source: hosted
     version: "1.2.1"
   win32:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: win32
-      sha256: a1fc9eb9248baa05dfc12ed5b66e377b3e23f095eec078e0371622b9033810d9
+      sha256: a0b93865d5644f11cf6a8c3f6db909f1ec168958b5805f6cc684adea957cd63d
       url: "https://pub.dev"
     source: hosted
-    version: "6.2.0"
+    version: "6.4.0"
   xdg_directories:
     dependency: transitive
     description:

@@ -5,19 +5,38 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# ✅ 必须：否则 softprops/action-gh-release 报 403
+permissions:
+  contents: write
+
 jobs:
   build-macos:
     runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # generate_release_notes 需要完整历史
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          architecture: 'arm64' 
+          architecture: 'arm64'
           cache: true
+
+      # ✅ 计算本次 release tag：macos- 前缀 + (原 tag 或当前 UTC 时间)
+      - name: Compute release tag
+        id: reltag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            base="${GITHUB_REF#refs/tags/}"
+          else
+            base="v$(date -u +%Y.%m.%d.%H%M%S)"
+          fi
+          echo "tag=macos-${base}" >> "$GITHUB_OUTPUT"
+          echo "Release tag = macos-${base}"
 
       - name: Flutter doctor
         run: flutter doctor -v
@@ -25,7 +44,7 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      - name: update flutter_launcher_icons
+      - name: Update launcher icons
         run: dart run flutter_launcher_icons
 
       - name: Build macOS
@@ -39,13 +58,17 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bmsc-macos
+          name: bmsc-macOS-${{ steps.reltag.outputs.tag }}
           path: build/macos/Build/Products/Release/bmsc-macos.zip
 
+      # ✅ 去掉 if 条件：两种触发都发 Release
       - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.reltag.outputs.tag }}
+          name: ${{ steps.reltag.outputs.tag }}
           files: build/macos/Build/Products/Release/bmsc-macos.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}

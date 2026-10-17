@@ -31,41 +31,32 @@ import 'package:bmsc/screen/settings_screen.dart';
 import 'package:bmsc/theme.dart';
 
 import 'util/string.dart';
-// ✅ 引入 sqflite 的 FFI 实现，用于 Windows/Linux/macOS 桌面端
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-// ✅ 引入 just_audio 平台接口，用于在 Windows 上绕过不支持的 API
-import 'package:just_audio/just_audio.dart';
+// ✅ 已移除未使用的 just_audio 导入
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:just_audio_platform_interface/method_channel_just_audio.dart';
 
 final _logger = LoggerUtils.getLogger('main');
 
-/// ✅ 自定义的 AudioPlayerPlatform，继承自 MethodChannelAudioPlayer，
-///    并重写 setAutomaticallyWaitsToMinimizeStalling 方法，使其在 Windows 上变为空操作。
 class WindowsAudioPlayerPlatform extends MethodChannelAudioPlayer {
-  WindowsAudioPlayerPlatform(String id) : super(id);
+  WindowsAudioPlayerPlatform(super.id); // ✅ 使用 super 参数语法
 
   @override
   Future<SetAutomaticallyWaitsToMinimizeStallingResponse>
       setAutomaticallyWaitsToMinimizeStalling(
           SetAutomaticallyWaitsToMinimizeStallingRequest request) async {
-    // 直接返回空响应，忽略该配置，防止在 Windows 上引发 MissingPluginException
     return SetAutomaticallyWaitsToMinimizeStallingResponse();
   }
 }
 
-/// ✅ 自定义的 JustAudioPlatform 代理，委托给原始平台，
-///    并在 init 中返回我们自定义的 WindowsAudioPlayerPlatform。
 class WindowsJustAudioPlatform extends JustAudioPlatform {
   WindowsJustAudioPlatform(this._inner);
   final JustAudioPlatform _inner;
 
   @override
   Future<AudioPlayerPlatform> init(InitRequest request) async {
-    // 仍然调用原始平台的 init 来注册插件通道
     await _inner.init(request);
-    // 返回我们的自定义实现，它会拦截未支持的方法
     return WindowsAudioPlayerPlatform(request.id);
   }
 
@@ -87,20 +78,17 @@ Future<void> main() async {
       WidgetsFlutterBinding.ensureInitialized();
       await LoggerUtils.init();
 
-      // ✅ 针对桌面端（Windows/Linux/macOS）初始化数据库工厂
       if (!kIsWeb &&
           (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         sqfliteFfiInit();
         databaseFactory = databaseFactoryFfi;
       }
 
-      // ✅ 在 Windows 上注入我们的代理平台，拦截未实现的 API
       if (Platform.isWindows) {
         JustAudioPlatform.instance =
             WindowsJustAudioPlatform(JustAudioPlatform.instance);
       }
 
-      // 匿名使用统计每日心跳（默认开启，设置 → 隐私 可关），不阻塞启动
       unawaited(StatsService.maybePing());
 
       if (Platform.isAndroid || Platform.isIOS) {
@@ -113,7 +101,6 @@ Future<void> main() async {
         );
       }
 
-      // 悬浮窗识曲（Android）
       if (Platform.isAndroid) {
         OverlayRecognitionService.instance.init();
         OverlayRecognitionService.instance.onOpenSearch = (keyword) {
@@ -123,7 +110,6 @@ Future<void> main() async {
         };
       }
 
-      // ✅ 仅 Linux 使用 media_kit 初始化，Windows 交给 just_audio_windows_plus
       if (Platform.isLinux) {
         JustAudioMediaKit.ensureInitialized();
       }
@@ -133,11 +119,9 @@ Future<void> main() async {
       if (!kDebugMode) _setupErrorHandlers();
       runApp(const MyApp());
     },
-    // ✅ 修复 1：用 Future.microtask 延迟处理致命错误，防止 Logger 重入死锁
     (error, stack) {
       Future.microtask(() => _logger.severe('zone error', error, stack));
     },
-    // ✅ 修复 2：用 Future.microtask 延迟处理 print 拦截，防止 Logger 重入死锁
     zoneSpecification: ZoneSpecification(
       print: (self, parent, zone, line) {
         parent.print(zone, line);

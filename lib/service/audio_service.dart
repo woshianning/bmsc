@@ -6,7 +6,7 @@ import 'package:audio_session/audio_session.dart';
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/local_track.dart';
-import 'package:bmsc/model/meta.dart';
+// ✅ 已移除未使用的 meta.dart
 import 'package:bmsc/model/track.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/local_music_service.dart';
@@ -14,7 +14,7 @@ import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
-import 'package:bmsc/util/silent_audio.dart';
+// ✅ 已移除未使用的 silent_audio.dart
 import 'package:bmsc/util/weighted_shuffle.dart';
 import 'package:rxdart/rxdart.dart';
 
@@ -334,7 +334,7 @@ class AudioService {
     final index = player.currentIndex;
     final source = player.sequenceState.currentSource;
     if (source == null || index == null) return false;
-
+    
     final tag = source.tag as MediaItem?;
     final extras = tag?.extras;
     if (tag == null || extras == null) return false;
@@ -379,7 +379,7 @@ class AudioService {
           extras: {...extras, 'cached': false},
         ),
       );
-
+      
       _playlistShuffleOrder.anchorAfter(curIdx);
       await doAndSavePlaylist(() async {
         await playlist.insertAll(curIdx + 1, [newSource]);
@@ -397,13 +397,14 @@ class AudioService {
       } else {
         _logger.warning('quality switch: new source vanished from playlist');
       }
-
+      
       await doAndSavePlaylist(() async {
         final oldIdx = _indexOfInPlaylist(source);
         if (oldIdx != null) {
           await playlist.removeAt(oldIdx);
         }
       });
+      
     } finally {
       _hijacking = false;
     }
@@ -545,7 +546,9 @@ class AudioService {
         }
         final source = player.sequenceState.currentSource;
         final extras = (source?.tag as MediaItem?)?.extras;
-        if (source == null || extras == null || source is! LazyAudioSource) {
+        if (source == null ||
+            extras == null ||
+            source is! LazyAudioSource) {
           _watchdogStallTicks = 0;
           return;
         }
@@ -890,29 +893,27 @@ class AudioService {
 
   Future<void> playByBvids(List<String> bvids, {int index = 0}) async {
     if (bvids.isEmpty) return;
-
+    
     await player.pause();
     if (!await _waitMutationFree()) return;
     _hijacking = true;
-
+    
     var targetIndex = 0;
     try {
       final metas = await DatabaseManager.getMetas(bvids);
       final srcs = <IndexedAudioSource>[];
-
+      
       for (var i = 0; i < metas.length; i++) {
         if (i == index) targetIndex = srcs.length;
         final meta = metas[i];
-
-        // ✅ 瞬间查询本地缓存，有缓存直接构建，无缓存生成 LazyAudioSource
+        
         final cachedSrcs = await DatabaseManager.getLocalAudioList(meta.bvid);
         if (cachedSrcs != null && cachedSrcs.isNotEmpty) {
           srcs.addAll(cachedSrcs);
         } else {
-          // ✅ 彻底废弃静音占位符，直接使用真实的网络流。这能保证自动切歌时直接边下边播，不会出现静音或卡顿。
           srcs.add(LazyAudioSource(
             meta.bvid,
-            0, // 0 代表自动获取第一个音频源
+            0,
             localFile: null,
             tag: MediaItem(
               id: meta.bvid,
@@ -927,18 +928,18 @@ class AudioService {
       }
 
       if (targetIndex >= srcs.length) targetIndex = 0;
-
+      
       await doAndSavePlaylist(() async {
         await playlist.clear();
         await playlist.addAll(srcs);
       });
-
+      
       await player.seek(Duration.zero, index: targetIndex);
+      
     } finally {
       _hijacking = false;
     }
 
-    // ✅ 直接开始播放，不需要任何等待或特殊的 autoPlay 逻辑
     await player.play();
   }
 

@@ -8,7 +8,7 @@ on:
       # 测试构建 tag（如 v1.17.0-test.1，会被上面的 v*.*.* 匹配）：
       # 只构建并上传 workflow artifact，不创建 Release、不触发用户更新提示
       - "v*.*.*-*"
-
+  workflow_dispatch:
 jobs:
   test:
     name: Unit Tests Gate

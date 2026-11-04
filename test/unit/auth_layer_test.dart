@@ -354,7 +354,7 @@ void main() {
       final req = adapter.requests.last;
       expect(req.method, 'POST');
       expect(req.headers['content-type'],
-          contains('application/x-www-form-urlencoded'))
+          contains('application/x-www-form-urlencoded'));
     });
 
     test('TV 轮询：86039 未确认（data null）与登录成功', () async {
@@ -408,7 +408,8 @@ void main() {
         'body': {'code': -101, 'message': 'access key check failed'},
       });
       expect(await api.getAudioApp('BV1xxx', 123, accessToken: 'stale_tok'),
-          isNull);
+          isNull); });
+          
           test('Android 登录用 HD appkey + buvid + App 头（避免 -351）', () async {
       await SharedPreferencesService.setAccessTokenPlatform('android');
       adapter.onPath('/x/player/playurl',

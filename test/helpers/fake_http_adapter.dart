@@ -56,7 +56,7 @@ final Map<String, List<Map<String, dynamic>>> _pending = {};
   Future<ResponseBody> fetch(RequestOptions options,
       Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
     requests.add(options);
-    inal key = _norm(options.path);
+    final key = _norm(options.path);
     final resp = _routes[key] ?? fallback;
     final pending = _pending[key];
     if (pending != null && pending.isNotEmpty) {

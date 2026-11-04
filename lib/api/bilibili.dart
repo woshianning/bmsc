@@ -24,9 +24,11 @@ import 'package:dio/dio.dart';
 
 class BilibiliAPI {
   static final _logger = LoggerUtils.getLogger('BilibiliAPI');
+
   static const String _webUserAgent =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0";
 
+  /// 完整 cookie 串（buvid3;SESSDATA;bili_jct;DedeUserID;...）
   /// 用空值初始化而非 late：首次启动 resetCookies 失败时 catch 分支会读
   /// cookies，late 字段会抛 LateInitializationError 掩盖真实网络错误。
   String cookies = '';
@@ -76,7 +78,7 @@ class BilibiliAPI {
   /// Set-Cookie 的属性名（小写）。这些是会话元数据而非会话数据，
   /// 解析时若不剔除会混进 Cookie 请求头并持久化（污染且无法自清）
   static const _cookieAttributes = {
-      'expires',
+    'expires',
     'path',
     'domain',
     'max-age',
@@ -121,7 +123,6 @@ class BilibiliAPI {
   /// playurl 直接 v_voucher——这里只合并会话凭据，保留匿名指纹。
   Future<void> applyLoginCookies(Map<String, String> sessionCookies,
       {bool save = false}) async {
-    _cookieMap.addAll(sessionCookies);
     final session = Map<String, String>.from(sessionCookies)
       ..remove('buvid')
       ..remove('buvid3')
@@ -141,7 +142,6 @@ class BilibiliAPI {
   }
 
   void _setupHeaders() {
-   
     // 只保留正常 Web 端请求头（对齐 BiliPai：不携带伪造的 app-key / x-bili-* 设备指纹头）
     headers = {
       if (cookies.isNotEmpty) 'cookie': cookies,
@@ -155,6 +155,7 @@ class BilibiliAPI {
         // App 端请求（带 app-key 头）不混入 Web 端指纹头（cookie/
         // referer/Origin/桌面 UA）：passport 风控校验 UA 与 app 签名 body
         // 的一致性，桌面 UA 会以 -105「验证码错误」拒绝（真机实测）。
+        // skipWebHeaders 用于 finger/spi 这类必须不带任何 Cookie 的请求。
         if (options.headers.containsKey('app-key') ||
             options.extra['skipWebHeaders'] == true) {
           return handler.next(options);
@@ -186,7 +187,6 @@ class BilibiliAPI {
     }
   }
 
-  /// 确保 buvid3 匿名身份存在（对齐 BiliPai CookieJar，UUID+infoc）
   /// 真实设备指纹格式（finger/spi 下发的 buvid3 带连字符；旧版本
   /// 本地合成的 `hex+infoc` 没有连字符，playurl 会返回 v_voucher 风控）。
   static bool _isDeviceBuvid(String? buvid) =>
@@ -219,7 +219,7 @@ class BilibiliAPI {
           '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}${Random().nextInt(1 << 30).toRadixString(16)}infoc';
       await SharedPreferencesService.setBuvid3(buvid3);
     }
-   _applyAnonymousIdentity(buvid3!, persisted4 ?? '', persistedNut);
+    _applyAnonymousIdentity(buvid3!, persisted4 ?? '', persistedNut);
     _logger.warning(
         'anonymous identity unavailable: playurl may be risk-controlled');
   }
@@ -306,7 +306,7 @@ class BilibiliAPI {
     final body = response.data;
     if (body is Map && body['code'] == -101) {
       _logger.warning('access_key invalid (-101), clearing token');
-     SharedPreferencesService.setAccessToken('').catchError((_) {});
+      SharedPreferencesService.setAccessToken('').catchError((_) {});
     }
   }
 
@@ -677,7 +677,7 @@ class BilibiliAPI {
 
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
     final quality = await SharedPreferencesService.getAudioQuality();
-   var data = await _requestPlayUrl(bvid, cid);
+    var data = await _requestPlayUrl(bvid, cid);
     if (data == null) return null;
 
     // WBI 签名错误 / 设备指纹缺失时，B 站会以 code=0 返回
@@ -707,7 +707,7 @@ class BilibiliAPI {
       'fnval': 4048,
       'fnver': '0',
       'fourk': '1',
-   'voice_balance': 0,
+      'voice_balance': 0,
       'gaia_source': 'pre-load',
       'isGaiaAvoided': true,
       'web_location': 1315873,
@@ -775,7 +775,7 @@ class BilibiliAPI {
       'platform': 'android',
       'mobi_app': usesTv ? 'android_tv_yst' : 'android_hd',
       'device': 'android',
-       if (!usesTv) 'build': '2001100',
+      if (!usesTv) 'build': '2001100',
       if (!usesTv) 'channel': 'master',
       if (!usesTv && buvid != null && buvid.isNotEmpty) 'buvid': buvid,
     };
@@ -798,7 +798,7 @@ class BilibiliAPI {
             'getAudioApp failed: code=${body['code']} ${body['message']}');
         if (body['code'] == -101) {
           await SharedPreferencesService.setAccessToken('');
-          } else if (body['code'] == -351 || body['code'] == -352) {
+        } else if (body['code'] == -351 || body['code'] == -352) {
           // 风控：冷却期内直接走 web，避免每次播放都先撞一次
           _appPlayUrlCooldownUntil =
               DateTime.now().add(const Duration(minutes: 10));
@@ -920,7 +920,7 @@ class BilibiliAPI {
     final prefs = await SharedPreferencesService.instance;
     final rawWbiKey = prefs.getString('raw_wbi_key');
     final lastUpdateDay = prefs.getInt('img_sub_key_last_update');
-     final currentDay = _wbiCacheDay(DateTime.now());
+    final currentDay = _wbiCacheDay(DateTime.now());
     if (!forceRefresh &&
         lastUpdateDay != null &&
         rawWbiKey != null &&
@@ -1248,7 +1248,7 @@ class BilibiliAPI {
       };
 
   Map<String, String> _geetestParams(CaptchaData? captcha,
-    {String? validate, String? seccode, String? challenge}) {
+      {String? validate, String? seccode, String? challenge}) {
     // challenge 必须用极验 SDK 回显值：原生 SDK 可能给回显 challenge
     // 追加后缀（实测出现 challenge+'lx'），validate 与回显 challenge
     // 绑定；回传注册时的原始 challenge 会被 B 站以 -105「验证码错误」

@@ -88,8 +88,14 @@ class LazyAudioSource extends StreamAudioSource {
       }
 
       final audio = await service.getAudio(bvid, actualCid);
-      qualityId = audio?.firstOrNull?.id;
-      return Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
+      final first = audio?.firstOrNull;
+      if (first == null || first.baseUrl.isEmpty) {
+        // 不要把空串交给 HttpClient：会抛出无上下文的
+        // 「No host specified in URI」，掩盖真实原因（多为 playurl 风控）
+        throw Exception('无法解析音频地址：B 站接口未返回可播放流（可能触发风控，请稍后重试）');
+      }
+      qualityId = first.id;
+      return Uri.parse(first.baseUrl);
     });
   }
 
@@ -211,7 +217,7 @@ class LazyAudioSource extends StreamAudioSource {
     if (eq(0, 0x66) && eq(1, 0x4C) && eq(2, 0x61) && eq(3, 0x43)) {
       return 'audio/flac';
     }
-    if (eq(0, 0x52) &&
+        if (eq(0, 0x52) &&
         eq(1, 0x49) &&
         eq(2, 0x46) &&
         eq(3, 0x46) &&

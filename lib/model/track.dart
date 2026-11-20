@@ -114,7 +114,12 @@ class Video {
   Video.fromJson(Map<String, dynamic> json) {
     id = json['id'];
     baseUrl = json['base_url'];
-    backupUrl = List.castFrom<dynamic, String>(json['backup_url']);
+    // backup_url 可能缺失或为 null；直接 castFrom(null) 会抛异常，
+    // 一旦某条流缺字段就会让整个 dash 解析失败、所有音质都不可用。
+    backupUrl = (json['backup_url'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ??
+        <String>[];
     bandwidth = json['bandwidth'];
     mimeType = json['mime_type'];
     codecs = json['codecs'];
@@ -154,7 +159,11 @@ class Audio {
   Audio.fromJson(Map<String, dynamic> json) {
     id = json['id'];
     baseUrl = json['base_url'];
-    backupUrl = List.castFrom<dynamic, String>(json['backup_url']);
+    // 同 Video：backup_url 允许缺失，避免整条 dash 因单个字段解析失败。
+    backupUrl = (json['backup_url'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ??
+        <String>[];
     bandwidth = json['bandwidth'];
     mimeType = json['mime_type'];
     codecs = json['codecs'];

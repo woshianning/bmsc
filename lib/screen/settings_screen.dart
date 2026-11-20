@@ -8,7 +8,6 @@ import 'package:bmsc/screen/playlist_search_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/section_habit_service.dart';
-import 'package:bmsc/service/stats_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../service/shared_preferences_service.dart';
@@ -24,13 +23,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   int _audioQuality = SharedPreferencesService.kAudioQualityAuto;
   bool _reactToInterruption = true;
-  bool _historyReported = true;
-  int _reportHistoryInterval = 10;
   String _downloadPath = '/storage/emulated/0/Download/BMSC';
   int _maxConcurrentDownloads = 3;
   int _cacheLimitSize = 300;
   bool _readFromClipboard = false;
-  bool _statsEnabled = true;
 
   @override
   void initState() {
@@ -42,27 +38,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final audioQuality = await SharedPreferencesService.getAudioQuality();
     final reactToInterruption =
         await SharedPreferencesService.getReactToInterruption();
-    final historyReported = await SharedPreferencesService.getHistoryReported();
-    final reportHistoryInterval =
-        await SharedPreferencesService.getReportHistoryInterval();
     final downloadPath = await SharedPreferencesService.getDownloadPath();
     final maxConcurrentDownloads =
         await SharedPreferencesService.getMaxConcurrentDownloads();
     final cacheLimitSize = await SharedPreferencesService.getCacheLimitSize();
     final readFromClipboard =
         await SharedPreferencesService.getReadFromClipboard();
-    final statsEnabled = await StatsService.getEnabled();
     if (mounted) {
       setState(() {
         _audioQuality = audioQuality;
         _reactToInterruption = reactToInterruption;
-        _historyReported = historyReported;
-        _reportHistoryInterval = reportHistoryInterval;
         _downloadPath = downloadPath;
         _maxConcurrentDownloads = maxConcurrentDownloads;
         _cacheLimitSize = cacheLimitSize;
         _readFromClipboard = readFromClipboard;
-        _statsEnabled = statsEnabled;
       });
     }
   }
@@ -492,41 +481,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               });
             },
           ),
-          _buildSectionTitle('数据'),
-          SwitchListTile(
-            title: const Text('播放记录上报'),
-            secondary: const Icon(Icons.history),
-            subtitle: const Text('上报记录到 B 站'),
-            value: _historyReported,
-            onChanged: (bool value) async {
-              await SharedPreferencesService.setHistoryReported(value);
-              setState(() {
-                _historyReported = value;
-              });
-            },
-          ),
-          ListTile(
-            title: const Text('上报间隔'),
-            leading: const Icon(Icons.timer),
-            subtitle: Text('$_reportHistoryInterval s'),
-            onTap: () async {
-              final newValue = await _showNumberInputDialog(
-                title: '设置上报间隔',
-                label: '上报间隔',
-                initial: _reportHistoryInterval,
-                min: 1,
-                max: 3600,
-                suffix: 's',
-              );
-              if (newValue != null) {
-                await SharedPreferencesService.setReportHistoryInterval(
-                    newValue);
-                setState(() {
-                  _reportHistoryInterval = newValue;
-                });
-              }
-            },
-          ),
           _buildSectionTitle('下载'),
           ListTile(
             title: const Text('下载管理'),
@@ -710,18 +664,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               await SharedPreferencesService.setReadFromClipboard(value);
               setState(() {
                 _readFromClipboard = value;
-              });
-            },
-          ),
-          SwitchListTile(
-            title: const Text('使用统计'),
-            secondary: const Icon(Icons.insights),
-            subtitle: const Text('匿名统计每日活跃与版本分布，不含个人信息'),
-            value: _statsEnabled,
-            onChanged: (bool value) async {
-              await StatsService.setEnabled(value);
-              setState(() {
-                _statsEnabled = value;
               });
             },
           ),

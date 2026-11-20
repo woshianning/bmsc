@@ -549,26 +549,6 @@ class SharedPreferencesService {
     await prefs.setInt('play_position', position);
   }
 
-  static Future<void> setHistoryReported(bool value) async {
-    final prefs = await SharedPreferencesService.instance;
-    await prefs.setBool('enable_history_report', value);
-  }
-
-  static Future<bool> getHistoryReported() async {
-    final prefs = await SharedPreferencesService.instance;
-    return prefs.getBool('enable_history_report') ?? true;
-  }
-
-  static Future<void> setReportHistoryInterval(int interval) async {
-    final prefs = await SharedPreferencesService.instance;
-    await prefs.setInt('report_history_interval', interval);
-  }
-
-  static Future<int> getReportHistoryInterval() async {
-    final prefs = await SharedPreferencesService.instance;
-    return prefs.getInt('report_history_interval') ?? 10;
-  }
-
   // 获取定时停止播放的时间（分钟）
   static Future<int?> getSleepTimerMinutes() async {
     final prefs = await SharedPreferencesService.instance;

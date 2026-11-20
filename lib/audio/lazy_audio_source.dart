@@ -29,6 +29,10 @@ class LazyAudioSource extends StreamAudioSource {
 
   int? qualityId;
 
+  /// cid==0 懒加载时从分P列表解析出的真实 cid，缓存供 CDN 回退复用。
+  /// 未解析（cid 非 0）时为 null，此时直接用构造参数 cid。
+  int? _resolvedCid;
+
   static bool liveStreamExperimentEnabled = false;
   static int liveStreamMaxBytes = 32 * 1024 * 1024;
   static int advertisedLengthCapBytes = 4 * 1024 * 1024;
@@ -86,6 +90,7 @@ class LazyAudioSource extends StreamAudioSource {
               'LazyAudioSource: failed to get first cid for $bvid: $e');
         }
       }
+      _resolvedCid = actualCid;
 
       final audio = await service.getAudio(bvid, actualCid);
       final first = audio?.firstOrNull;
@@ -278,8 +283,8 @@ class LazyAudioSource extends StreamAudioSource {
     if (response.statusCode == 403 || response.statusCode == 404) {
       await response.drain<void>();
       final service = await BilibiliService.instance;
-      final audio = await service.getAudio(
-          bvid, cid == 0 ? 1 : cid); // fallback, might fail if no real cid
+      // 复用 uri getter 解析出的真实 cid（懒加载时 cid 参数为 0）。
+      final audio = await service.getAudio(bvid, _resolvedCid ?? cid);
       final candidates = audio ?? <dynamic>[];
       final retryCandidates = <({Uri url, int id})>[
         for (final a in candidates)

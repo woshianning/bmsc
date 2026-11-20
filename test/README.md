@@ -18,7 +18,6 @@ dart test test/unit          # 或 flutter test test/unit
 | `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、会话失效信号（-101 + SESSDATA 才触发；未登录/-400/成功响应不触发）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
 | `feedback_test.dart` | 反馈通道 payload 组装：bilibili 凭据/Bearer token 脱敏、日志尾部截断、content trim 与空字段省略、meta 字段 |
 | `changelog_test.dart` | changelog.md 解析：版本分节顺序、多行条目合并、空行剔除、空输入、条目分组 |
-| `stats_test.dart` | 使用统计：匿名安装 ID 格式与随机性、UTC 日期（跨日界线）、每日心跳去重判断 |
 | `section_habit_test.dart` | 主页板块习惯学习：纯累计计数打分（不随时间衰减、置顶不自动下沉、累计反超迁移）、带反超阈值的相邻上浮排序（防抖/冷启动门槛/稳定性）、学习状态序列化往返与旧版本数据兼容 |
 | `weighted_shuffle_test.dart` | 加权随机播放：Efraimidis–Spirakis 加权排列（首项概率 ∝ 权重、等权退化均匀、initialIndex 首位、权重钳制）、后缀权重散插与排列的同分布一致性 |
 | `anchored_shuffle_order_test.dart` | 随机序锚定：anchorAfter 全锚定（1:1 换源）、anchorFirstAfter 入口分 P 锚定 + 其余分 P 散插（「下一首」不变式、散插随机性、锚点失效回退）、加权 shuffle 集成 |

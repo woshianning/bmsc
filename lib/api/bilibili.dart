@@ -898,17 +898,6 @@ class BilibiliAPI {
     });
   }
 
-  Future<void> reportHistory(int aid, int cid, int? progress) {
-    return _callAPI(apiReportHistoryUrl,
-        queryParameters: {
-          'aid': aid,
-          'cid': cid,
-          'progress': progress,
-          'csrf': crypto.extractCSRF(cookies),
-        },
-        isPost: true);
-  }
-
   /// WBI key 在北京时间零点轮换；按 UTC 日缓存会在 16:00–24:00 UTC
   /// 继续使用前一天已失效的 key，导致 playurl 返回 v_voucher。
   static int _wbiCacheDay(DateTime now) {

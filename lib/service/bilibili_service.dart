@@ -293,6 +293,21 @@ class BilibiliService {
   }
 
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
+    // 网络抖动 / DNS 瞬间失败时 playurl 两条路径可能同时返回 null。
+    // 这类失败重试一次即可恢复，且不涉及副作用（纯 GET），重试是安全的。
+    final result = await _getAudioOnce(bvid, cid);
+    if (result != null && result.isNotEmpty) return result;
+
+    await Future.delayed(const Duration(milliseconds: 400));
+    final retried = await _getAudioOnce(bvid, cid);
+    if (retried != null && retried.isNotEmpty) {
+      _logger.info('getAudio succeeded on retry: $bvid:$cid');
+      return retried;
+    }
+    return result ?? retried;
+  }
+
+  Future<List<Audio>?> _getAudioOnce(String bvid, int cid) async {
     // App 端 playurl 优先（appkey 签名 + access_key，对齐 BiliPai）；失败回退 web WBI
     final accessToken = await SharedPreferencesService.getAccessToken();
     final (buvid, _) = await getLoginIdentity();
@@ -374,10 +389,6 @@ class BilibiliService {
 
   Future<List<String>?> getSearchSuggestions(String keyword) {
     return _bilibiliAPI.getSearchSuggestions(keyword);
-  }
-
-  Future<void> reportHistory(int aid, int cid, int? progress) {
-    return _bilibiliAPI.reportHistory(aid, cid, progress);
   }
 
   /// Returns a list of tuples containing subtitle language and URL

@@ -13,6 +13,9 @@
 migrate_working_dir/
 devtools_options.yaml
 
+# WorkBuddy 本地工作记录（工具生成，与项目源码无关）
+.workbuddy/
+
 # VM Service 截图脚本的产物（脚本本身入库，见 tools/screenshot/*.dart）
 tools/screenshot/*.png
 tools/screenshot/iso.txt

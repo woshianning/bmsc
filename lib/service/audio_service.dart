@@ -143,7 +143,6 @@ class AudioService {
     ),
   );
   late AudioSession session;
-  Timer? _historyReportTimer;
   Timer? _playPositionTimer;
   Timer? _sleepTimer;
   Timer? _fadeTimer;
@@ -164,6 +163,13 @@ class AudioService {
   Timer? _trackResyncTimer;
   IndexedAudioSource? _lastHandledCurrentSource;
   int _watchdogStallTicks = 0;
+
+  // Source error / 卡死自动恢复：按 bvid:cid 限流，避免网络持续故障时无限重建音源。
+  // 计数在窗口内累加，超过上限后放弃自动恢复，交还用户手动操作。
+  final Map<String, int> _recoveryAttempts = {};
+  final Map<String, DateTime> _recoveryWindowStart = {};
+  static const int _maxRecoveryAttempts = 3;
+  static const Duration _recoveryWindow = Duration(minutes: 5);
 
   Stream<int?> get sleepTimerStream => _sleepTimerSubject.stream;
   Stream<double> get speedStream => _speedSubject.stream;
@@ -492,6 +498,12 @@ class AudioService {
       if (event.errorCode != null || event.errorMessage != null) {
         _logger.severe(
             'player error: code=${event.errorCode}, message=${event.errorMessage}');
+        // 仅记录日志会让播放器永久停在错误态（Android 上必须重启 App）。
+        // Source error 本身平台无关，这里统一触发一次带限流的音源重建续播。
+        final source = player.sequenceState.currentSource;
+        if (source is LazyAudioSource) {
+          _recoverCurrentSource(source, reason: 'player error');
+        }
       }
     });
 
@@ -520,15 +532,9 @@ class AudioService {
     });
 
     player.playerStateStream.listen((state) async {
-      final enableHistoryReport =
-          await SharedPreferencesService.getHistoryReported();
       if (state.playing) {
-        if (enableHistoryReport) {
-          _startCloudHistoryReporting();
-        }
         _startPlayPositionSaving();
       } else {
-        _stopHistoryReporting();
         _stopPlayPositionSaving();
       }
     });
@@ -565,7 +571,7 @@ class AudioService {
           _logger.warning(
               'watchdog: playing but stuck at 0 for 20s, replace source at index=$idx');
           if (idx != null) {
-            _unwedgeCurrentSourceIOS(idx, source);
+            _replaceCurrentSource(source);
           }
         }
       });
@@ -591,7 +597,46 @@ class AudioService {
     });
   }
 
-  Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) async {
+  /// 播放器进入错误态（如 Source error）后，重建当前音源并从原进度续播。
+  ///
+  /// 重建逻辑本身平台无关（仅操作 playlist 与 player），因此对所有平台开放：
+  /// Android 上补上了此前完全缺失的自动恢复；iOS / 桌面端遇到同类错误同样会卡死，
+  /// 这层恢复对它们同样有益，且不改变 watchdog（仍为 iOS 专属）的既有行为。
+  /// 按 bvid:cid 限流，避免 CDN 持续故障时无限重建音源。
+  Future<void> _recoverCurrentSource(AudioSource source,
+      {required String reason}) async {
+    if (source is! LazyAudioSource) return;
+    if (_hijacking) return;
+
+    final extras = (source.tag as MediaItem?)?.extras;
+    final bvid = extras?['bvid'];
+    final cid = extras?['cid'];
+    if (bvid == null) return;
+    final key = '$bvid:$cid';
+
+    final now = DateTime.now();
+    final windowStart = _recoveryWindowStart[key];
+    if (windowStart == null || now.difference(windowStart) > _recoveryWindow) {
+      _recoveryWindowStart[key] = now;
+      _recoveryAttempts[key] = 0;
+    }
+    final attempts = (_recoveryAttempts[key] ?? 0) + 1;
+    if (attempts > _maxRecoveryAttempts) {
+      _logger.severe(
+          'auto-recover: give up on $key after $_maxRecoveryAttempts attempts ($reason)');
+      return;
+    }
+    _recoveryAttempts[key] = attempts;
+
+    _logger.warning(
+        'auto-recover: $reason, rebuilding $key (attempt $attempts/$_maxRecoveryAttempts)');
+    // Source error 时 player.playing 已为 false，必须强制续播，否则只是
+    // 把「卡死」变成「停在暂停态」，用户仍需手动干预。
+    await _replaceCurrentSource(source, forcePlay: true);
+  }
+
+  Future<void> _replaceCurrentSource(AudioSource source,
+      {bool forcePlay = false}) async {
     if (source is! LazyAudioSource) return;
     if (_hijacking) return;
     _hijacking = true;
@@ -609,7 +654,7 @@ class AudioService {
       final curIdx = _indexOfInPlaylist(source);
       if (curIdx == null ||
           !identical(player.sequenceState.currentSource, source)) {
-        _logger.warning('watchdog: source no longer current, abort unwedge');
+        _logger.warning('auto-recover: source no longer current, abort rebuild');
         return;
       }
       _watchdogUnwedgedSources.add(source);
@@ -634,7 +679,7 @@ class AudioService {
           } catch (e) {
             _logger.warning('watchdog unwedge seek failed: $e');
           }
-          if (wasPlaying) await player.play();
+          if (wasPlaying || forcePlay) await player.play();
         } else {
           _logger.warning('watchdog: fresh source vanished from playlist');
         }
@@ -643,44 +688,14 @@ class AudioService {
           if (oldIdx != null) await playlist.removeAt(oldIdx);
         });
       } catch (e) {
-        _logger.warning('watchdog unwedge failed: $e');
+        _logger.warning('auto-recover: playlist rebuild failed: $e');
       }
+    } catch (e) {
+      // 恢复路径必须吞掉异常，否则 fire-and-forget 调用会产生未捕获的 zone error。
+      _logger.warning('auto-recover: rebuild aborted: $e');
     } finally {
       _hijacking = false;
     }
-  }
-
-  void _startCloudHistoryReporting() async {
-    _historyReportTimer?.cancel();
-    final interval = await SharedPreferencesService.getReportHistoryInterval();
-    _historyReportTimer =
-        Timer.periodic(Duration(seconds: interval), (timer) async {
-      final currentSource = player.sequenceState.currentSource;
-      if (currentSource == null || !player.playing) {
-        return;
-      }
-
-      final extras = (currentSource.tag as MediaItem?)?.extras;
-      if (extras == null || extras['aid'] == null || extras['cid'] == null) {
-        return;
-      }
-
-      final length = currentSource.duration?.inSeconds;
-
-      if (await SharedPreferencesService.getHistoryReported()) {
-        await (await BilibiliService.instance).reportHistory(
-            extras['aid'],
-            extras['cid'],
-            length != null && length - player.position.inSeconds <= interval
-                ? length
-                : player.position.inSeconds);
-      }
-    });
-  }
-
-  void _stopHistoryReporting() {
-    _historyReportTimer?.cancel();
-    _historyReportTimer = null;
   }
 
   void _startPlayPositionSaving() {

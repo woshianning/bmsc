@@ -13,7 +13,6 @@ import 'package:bmsc/audio/just_audio_background_custom.dart';
 import 'package:bmsc/service/overlay_recognition.dart';
 import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
-import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/url.dart';
 import 'package:flutter/material.dart';
@@ -88,8 +87,6 @@ Future<void> main() async {
         JustAudioPlatform.instance =
             WindowsJustAudioPlatform(JustAudioPlatform.instance);
       }
-
-      unawaited(StatsService.maybePing());
 
       if (Platform.isAndroid || Platform.isIOS) {
         _logger.info('audio platform: ${Platform.operatingSystem}');

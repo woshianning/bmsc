@@ -139,7 +139,8 @@ Future<_ImportedFile> _processFile(_ImportJob job) async {
 class LocalMusicService {
   /// 支持导入的音频扩展名（按平台能力过滤）：
   /// darwin（iOS/macOS）AVPlayer 不支持 ogg/opus，
-  /// 其余平台（Android ExoPlayer / Linux、Windows media_kit）可以。
+  /// 其余平台可以：Android 走 ExoPlayer，Linux 走 media_kit，
+  /// Windows 走 just_audio_windows_plus。
   static List<String> get supportedExtensions =>
       Platform.isIOS || Platform.isMacOS
           ? const ['mp3', 'flac', 'm4a', 'aac', 'wav', 'aiff', 'mp4']

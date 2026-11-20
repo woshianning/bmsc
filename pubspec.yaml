@@ -17,7 +17,8 @@ dependencies:
   just_audio_media_kit: ^2.1.0
   media_kit_libs_linux: ^1.2.1
   just_audio_windows_plus: ^0.5.3 
-  media_kit_libs_macos_audio: ^1.1.4
+  # macOS 使用 just_audio 原生 AVAudioPlayer 后端（见 main.dart），
+  # 不启用 media_kit，因此不需要 media_kit_libs_macos_audio。
   sqflite_common_ffi: ^2.3.4
   # ✅ 新增：桌面端 FFI 需要打包 sqlite3 动态库
   sqlite3_flutter_libs: ^0.5.26

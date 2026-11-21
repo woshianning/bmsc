@@ -14,7 +14,7 @@ import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
-// ✅ 已移除未使用的 silent_audio.dart
+import 'package:bmsc/util/silent_audio.dart';
 import 'package:bmsc/util/weighted_shuffle.dart';
 import 'package:rxdart/rxdart.dart';
 
@@ -159,6 +159,12 @@ class AudioService {
   double? _userVolumeBeforeFade;
 
   final Set<AudioSource> _watchdogUnwedgedSources = {};
+  // 在途的 dummy 解析（按实例身份去重）：兜底（当前项）与预解析（下一首）
+  // 共享，避免同一占位源被重复 fetch/插入。
+  final Map<IndexedAudioSource, Future<void>> _resolvingDummies = {};
+  // 每个占位源成为当前项时独立记录「当时是否在播放」，解析替换后据此恢复，
+  // 避免当前项兜底解析与下一首预解析并发时共用单个布尔互相覆盖。
+  final Map<IndexedAudioSource, bool> _dummyResumeStates = {};
   bool _needsTrackResync = false;
   Timer? _trackResyncTimer;
   IndexedAudioSource? _lastHandledCurrentSource;
@@ -342,7 +348,7 @@ class AudioService {
     final index = player.currentIndex;
     final source = player.sequenceState.currentSource;
     if (source == null || index == null) return false;
-    
+
     final tag = source.tag as MediaItem?;
     final extras = tag?.extras;
     if (tag == null || extras == null) return false;
@@ -387,7 +393,7 @@ class AudioService {
           extras: {...extras, 'cached': false},
         ),
       );
-      
+
       _playlistShuffleOrder.anchorAfter(curIdx);
       await doAndSavePlaylist(() async {
         await playlist.insertAll(curIdx + 1, [newSource]);
@@ -405,14 +411,13 @@ class AudioService {
       } else {
         _logger.warning('quality switch: new source vanished from playlist');
       }
-      
+
       await doAndSavePlaylist(() async {
         final oldIdx = _indexOfInPlaylist(source);
         if (oldIdx != null) {
           await playlist.removeAt(oldIdx);
         }
       });
-      
     } finally {
       _hijacking = false;
     }
@@ -588,8 +593,7 @@ class AudioService {
           !_watchdogUnwedgedSources.contains(source)) {
         _watchdogStallTicks = 0;
         final idx = player.currentIndex;
-        _logger.warning(
-            'watchdog: stalled at ${position.inSeconds}s for 20s, '
+        _logger.warning('watchdog: stalled at ${position.inSeconds}s for 20s, '
             'recovering source at index=$idx');
         if (idx != null) {
           // 走与 Source error 相同的限流恢复，避免两条路径叠加超额重建。
@@ -676,7 +680,8 @@ class AudioService {
       final curIdx = _indexOfInPlaylist(source);
       if (curIdx == null ||
           !identical(player.sequenceState.currentSource, source)) {
-        _logger.warning('auto-recover: source no longer current, abort rebuild');
+        _logger
+            .warning('auto-recover: source no longer current, abort rebuild');
         return;
       }
       _watchdogUnwedgedSources.add(source);
@@ -856,7 +861,17 @@ class AudioService {
     final extras = (source.tag as MediaItem?)?.extras;
     if (extras == null) return;
     final isCurrentChanged = !identical(source, _lastHandledCurrentSource);
-    if (extras['bvid'] != null && extras['cid'] != null) {
+
+    if (extras['dummy'] == true) {
+      // 占位源成为当前项：立即暂停，避免 1 秒短静音自动切歌引发级联解析。
+      // 解析完成后按此刻是否正在播放决定是否续播。
+      if (isCurrentChanged) {
+        _lastHandledCurrentSource = source;
+        _dummyResumeStates[source] = player.playing;
+        if (player.playing) player.pause();
+      }
+      unawaited(_resolveDummySource(source));
+    } else if (extras['bvid'] != null && extras['cid'] != null) {
       if (isCurrentChanged) {
         _lastHandledCurrentSource = source;
         unawaited(
@@ -867,6 +882,113 @@ class AudioService {
     }
     if (isCurrentChanged) {
       _historyUpdateCnt = 0;
+      // 预解析只由真实切歌驱动：每次只解析「播放序下一首」一首。
+      // 绝不在解析完成回调里链式预解析——那会在数秒内把整个队列全部解析，
+      // 又变回批量下载风暴（真机历史教训）。
+      _schedulePreResolveAhead();
+    }
+  }
+
+  /// 提前把播放序下一首的占位源替换为真实源，使自然切歌无需等待网络。
+  /// nextIndex 已含 shuffle/loop 语义；单曲循环与队尾时无事可做。
+  void _schedulePreResolveAhead() {
+    final current = player.currentIndex;
+    final next = player.nextIndex;
+    if (current == null || next == null || next == current) return;
+    final seq = playlist.sequence;
+    if (next >= seq.length) return;
+    final source = seq[next];
+    final extras = (source.tag as MediaItem?)?.extras;
+    if (extras == null || extras['dummy'] != true) return;
+    unawaited(_resolveDummySource(source));
+  }
+
+  Future<void> _resolveDummySource(IndexedAudioSource dummy) {
+    final inflight = _resolvingDummies[dummy];
+    if (inflight != null) return inflight;
+    final f = _doResolveDummy(dummy);
+    _resolvingDummies[dummy] = f;
+    unawaited(f.catchError((Object e) {
+      _logger.warning('resolve dummy failed: $e');
+    }).whenComplete(() {
+      if (identical(_resolvingDummies[dummy], f)) {
+        _resolvingDummies.remove(dummy);
+      }
+    }));
+    return f;
+  }
+
+  Future<void> _doResolveDummy(IndexedAudioSource dummy) async {
+    // 无论解析成功与否都要消费这次的播放状态：失败时若播放器被暂停过，
+    // 必须恢复，否则用户会停在暂停态。
+    final shouldResume = _dummyResumeStates.remove(dummy) ?? false;
+    var handedOff = false;
+    if (_hijacking && !await _waitMutationFree()) {
+      if (shouldResume) await player.play();
+      return;
+    }
+    final dummyIdx = _indexOfInPlaylist(dummy);
+    if (dummyIdx == null) {
+      if (shouldResume) await player.play();
+      return;
+    }
+    _hijacking = true;
+    try {
+      final tag = dummy.tag as MediaItem?;
+      if (tag == null) return;
+      final bvid = tag.id;
+      // 等待锁期间占位源可能已被移除，重新确认后再插入。
+      if (_indexOfInPlaylist(dummy) == null) return;
+      final isCurrent = identical(player.sequenceState.currentSource, dummy);
+      // 用与 playByBvids 未缓存项一致的方式重建（cid=0 懒解析首个分P），
+      // 去掉 dummy 标记，避免解析后的真实源再被当作占位源处理。
+      final fresh = LazyAudioSource(
+        bvid,
+        0,
+        localFile: null,
+        tag: MediaItem(
+          id: tag.id,
+          title: tag.title,
+          artUri: tag.artUri,
+          artist: tag.artist,
+          duration: tag.duration,
+          extras: {'bvid': bvid},
+        ),
+      );
+      _playlistShuffleOrder.anchorAfter(dummyIdx);
+      await doAndSavePlaylist(() async {
+        await playlist.insertAll(dummyIdx + 1, [fresh]);
+      });
+      final freshIdx = _indexOfInPlaylist(fresh);
+      if (freshIdx == null) {
+        _logger.warning('resolve dummy: fresh source vanished');
+        return;
+      }
+      if (isCurrent && identical(player.sequenceState.currentSource, dummy)) {
+        try {
+          await player
+              .seek(Duration.zero, index: freshIdx)
+              .timeout(const Duration(seconds: 5));
+        } catch (e) {
+          _logger.warning('resolve dummy seek failed: $e');
+        }
+        if (shouldResume) await player.play();
+        // 播放焦点已交给 fresh（无论 seek 成败），finally 不再重复 play。
+        handedOff = true;
+      }
+      await doAndSavePlaylist(() async {
+        final oldIdx = _indexOfInPlaylist(dummy);
+        if (oldIdx != null) await playlist.removeAt(oldIdx);
+      });
+      _logger.info('resolved dummy: $bvid (wasCurrent=$isCurrent)');
+    } catch (e) {
+      _logger.warning('resolve dummy aborted: $e');
+    } finally {
+      _hijacking = false;
+      // 当前项占位源解析失败时播放器可能停在暂停态，恢复播放让静音自然
+      // 播完并切到下一首（降级），绝不把用户留在暂停中。预解析下一首时
+      // shouldResume 为 false，不受影响。
+      if (shouldResume && !handedOff) await player.play();
     }
   }
 
@@ -952,20 +1074,26 @@ class AudioService {
     // 同样不在开头 pause，避免等锁失败时把播放器留在暂停态。
     if (!await _waitMutationFree()) return;
     _hijacking = true;
-    
+
     var targetIndex = 0;
     try {
       final metas = await DatabaseManager.getMetas(bvids);
       final srcs = <IndexedAudioSource>[];
-      
+      // 静音占位源：只给未被选中、且无本地缓存的远项使用。它们不触发任何
+      // 网络请求，播放滚动到时再解析为真实音源（见 _onTrackIndexChanged）。
+      // 这样一次点 18 首只有「当前 + 下一首」两路下载，而不是 18 路并发。
+      final dummyUri = await resolveSilentAudioUri();
+
       for (var i = 0; i < metas.length; i++) {
         if (i == index) targetIndex = srcs.length;
         final meta = metas[i];
-        
+
         final cachedSrcs = await DatabaseManager.getLocalAudioList(meta.bvid);
         if (cachedSrcs != null && cachedSrcs.isNotEmpty) {
+          // 已缓存的本地源读取不产生下载，可全部直接加入。
           srcs.addAll(cachedSrcs);
-        } else {
+        } else if (i == index || i == index + 1) {
+          // 当前项与下一首立即解析，保证点播即响、切歌无缝。
           srcs.add(LazyAudioSource(
             meta.bvid,
             0,
@@ -979,18 +1107,33 @@ class AudioService {
               extras: {'bvid': meta.bvid},
             ),
           ));
+        } else {
+          srcs.add(AudioSource.uri(
+            dummyUri,
+            tag: MediaItem(
+              id: meta.bvid,
+              title: meta.title,
+              artUri: Uri.tryParse(meta.artUri),
+              artist: meta.artist,
+              duration: Duration(seconds: meta.duration),
+              extras: {
+                'bvid': meta.bvid,
+                'dummy': true,
+                if (meta.parts != null && meta.parts! > 1) 'parts': meta.parts,
+              },
+            ),
+          ));
         }
       }
 
       if (targetIndex >= srcs.length) targetIndex = 0;
-      
+
       await doAndSavePlaylist(() async {
         await playlist.clear();
         await playlist.addAll(srcs);
       });
-      
-      await _seekInCriticalSection(Duration.zero, index: targetIndex);
 
+      await _seekInCriticalSection(Duration.zero, index: targetIndex);
     } finally {
       _hijacking = false;
     }

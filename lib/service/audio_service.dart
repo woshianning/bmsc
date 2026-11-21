@@ -165,6 +165,10 @@ class AudioService {
   // 每个占位源成为当前项时独立记录「当时是否在播放」，解析替换后据此恢复，
   // 避免当前项兜底解析与下一首预解析并发时共用单个布尔互相覆盖。
   final Map<IndexedAudioSource, bool> _dummyResumeStates = {};
+  // 已登记「下载完成后换文件源」的流源（按实例去重）。Apple 平台为避免
+  // setAudioSource 超时会向播放器谎报截断长度（约前 45s），导致进度条时长
+  // 偏短；流源下载完成后换入文件源，播放器读到真实 moov 时长即恢复。
+  final Set<LazyAudioSource> _durationSwapWatched = {};
   bool _needsTrackResync = false;
   Timer? _trackResyncTimer;
   IndexedAudioSource? _lastHandledCurrentSource;
@@ -862,6 +866,15 @@ class AudioService {
     if (extras == null) return;
     final isCurrentChanged = !identical(source, _lastHandledCurrentSource);
 
+    // Apple 平台流源为快速就绪谎报了截断长度，下载完成后换成文件源
+    // 才能让播放器读到真实总时长。仅登记非本地流源，避免重复换源。
+    // 放在这里而非 playStats 分支内：批量点歌的源 extras 常无 cid。
+    if ((Platform.isIOS || Platform.isMacOS) &&
+        source is LazyAudioSource &&
+        !source.isLocal) {
+      _watchDurationSwap(source);
+    }
+
     if (extras['dummy'] == true) {
       // 占位源成为当前项：立即暂停，避免 1 秒短静音自动切歌引发级联解析。
       // 解析完成后按此刻是否正在播放决定是否续播。
@@ -887,6 +900,34 @@ class AudioService {
       // 又变回批量下载风暴（真机历史教训）。
       _schedulePreResolveAhead();
     }
+  }
+
+  /// Apple 平台的流源为规避 setAudioSource 超时会向播放器谎报截断长度
+  /// （约前 45s 数据），进度条因此把 3 分钟的歌显示成 2 分多。下载完成后
+  /// 该源仍是当前项时，换成指向缓存文件的同源重建，播放器重新读到 moov
+  /// 里的真实时长即可恢复。只换一次（实例去重），失败不影响继续播放。
+  void _watchDurationSwap(LazyAudioSource source) {
+    if (!_durationSwapWatched.add(source)) return;
+    source.downloadComplete.then((_) async {
+      _durationSwapWatched.remove(source);
+      // 只有被截断长度的超大音源才需要换源恢复真实时长。普通歌曲本就
+      // 通告完整长度，跳过换源可避免下载完成后一次无谓的 seek 抖动。
+      if (!source.advertisedLengthWasCapped) return;
+      if (_hijacking) return;
+      if (!identical(player.sequenceState.currentSource, source)) return;
+      final file = await source.localFile;
+      // 下载完成回调里 .part 已改名为主文件；复核时效性与文件存在性。
+      if (!file.existsSync()) return;
+      if (_hijacking ||
+          !identical(player.sequenceState.currentSource, source)) {
+        return;
+      }
+      _logger.info('duration swap: ${source.bvid} downloaded, '
+          'replace with file source to restore real duration');
+      await _replaceCurrentSource(source);
+    }, onError: (_) {
+      _durationSwapWatched.remove(source);
+    });
   }
 
   /// 提前把播放序下一首的占位源替换为真实源，使自然切歌无需等待网络。

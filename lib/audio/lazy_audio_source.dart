@@ -36,7 +36,16 @@ class LazyAudioSource extends StreamAudioSource {
   static bool liveStreamExperimentEnabled = false;
   static int liveStreamMaxBytes = 32 * 1024 * 1024;
   static int advertisedLengthCapBytes = 4 * 1024 * 1024;
+  /// 只有超过该大小的音源才需要谎报截断长度。Apple 平台本地 HTTP 代理
+  /// 遇到 moov 前置的超大文件（长视频/播客，数百 MB）时，AVPlayer 会等
+  /// 整段下载完才 ready，导致 setAudioSource 超时；截断长度可让它先就绪。
+  /// 但普通歌曲只有几 MB，截断会按字节比例把 3:25 的歌显示成 2:19，
+  /// 故把截断阈值与 cap 下限拆开，普通歌曲通告完整长度。
+  static int lengthSpoofThresholdBytes = 64 * 1024 * 1024;
   bool _serveAsLiveStream = false;
+  /// 本次播放是否真的对播放器谎报了截断长度。audio_service 据此决定
+  /// 下载完成后是否需要换源恢复真实时长（普通歌曲不需要，避免无谓 seek 抖动）。
+  bool advertisedLengthWasCapped = false;
 
   static bool _shouldServeAsLiveStream(int? sourceLength) =>
       Platform.isIOS &&
@@ -370,7 +379,7 @@ class LazyAudioSource extends StreamAudioSource {
         if (type == 'moov') {
           moovFront = true;
           final real = sourceLength;
-          if (real != null && real > advertisedLengthCapBytes) {
+          if (real != null && real > lengthSpoofThresholdBytes) {
             _logger.info(
                 '[$bvid:$cid] moov front: advertising length cap ${advertisedLengthCap(real)}/$real');
           }
@@ -397,14 +406,14 @@ class LazyAudioSource extends StreamAudioSource {
 
     int? advertisedSourceLength() {
       final real = sourceLength;
-      // macOS 与 iOS 共用 AVFoundation 播放器，同样通过本地 HTTP 代理消费
-      // StreamAudioSource。moov 前置时若向播放器暴露完整长度（可能数百 MB），
-      // AVPlayer 会一直等待整段数据而无法进入 ready，导致 setAudioSource 超时。
-      // 因此两个 Apple 平台都只通告前 45 秒对应的长度，让播放器先就绪再续播。
+      // 只有 moov 前置的超大文件（>64MB）才需要截断长度，避免 AVPlayer
+      // 等整段下载完才 ready → setAudioSource 超时。普通歌曲（几 MB）必须
+      // 通告完整长度，否则播放器按字节比例推算总时长会把 3:25 显示成 2:19。
       if ((Platform.isIOS || Platform.isMacOS) &&
           moovFront &&
           real != null &&
-          real > advertisedLengthCapBytes) {
+          real > lengthSpoofThresholdBytes) {
+        advertisedLengthWasCapped = true;
         return advertisedLengthCap(real);
       }
       return real;

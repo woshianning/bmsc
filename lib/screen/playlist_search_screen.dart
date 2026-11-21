@@ -75,14 +75,27 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
 
     const initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initializationSettingsIOS = DarwinInitializationSettings();
+    const initializationSettingsDarwin = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
     const initializationSettings = InitializationSettings(
       android: initializationSettingsAndroid,
-      iOS: initializationSettingsIOS,
+      iOS: initializationSettingsDarwin,
+      macOS: initializationSettingsDarwin,
     );
 
     await flutterLocalNotificationsPlugin.initialize(
         settings: initializationSettings);
+
+    // macOS 通知需显式请求权限；Android 的权限请求保留在调用处，Windows/Linux 无此 API。
+    if (Platform.isMacOS) {
+      await flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<
+              MacOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(alert: true, badge: false, sound: false);
+    }
     _notificationsInitialized = true;
   }
 
@@ -684,18 +697,21 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       title: '歌单搜索',
       body: '准备处理...',
       notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-        'playlist_search',
-        'Playlist Search',
-        channelDescription: 'Notifications for playlist search progress',
-        importance: Importance.high,
-        priority: Priority.high,
-        showProgress: true,
-        onlyAlertOnce: true,
-        playSound: false,
-        ongoing: true,
-        autoCancel: false,
-      )),
+        android: AndroidNotificationDetails(
+          'playlist_search',
+          'Playlist Search',
+          channelDescription: 'Notifications for playlist search progress',
+          importance: Importance.high,
+          priority: Priority.high,
+          showProgress: true,
+          onlyAlertOnce: true,
+          playSound: false,
+          ongoing: true,
+          autoCancel: false,
+        ),
+        iOS: const DarwinNotificationDetails(presentSound: false),
+        macOS: const DarwinNotificationDetails(presentSound: false),
+      ),
     );
 
     setState(() {
@@ -751,6 +767,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
               onlyAlertOnce: true,
               playSound: false,
             ),
+            iOS: const DarwinNotificationDetails(presentSound: false),
+            macOS: const DarwinNotificationDetails(presentSound: false),
           ),
         );
         if (isSearchPaused) {
@@ -773,6 +791,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                 onlyAlertOnce: true,
                 playSound: false,
               ),
+              iOS: const DarwinNotificationDetails(presentSound: false),
+              macOS: const DarwinNotificationDetails(presentSound: false),
             ),
           );
           return;
@@ -819,6 +839,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
             onlyAlertOnce: true,
             playSound: false,
           ),
+          iOS: DarwinNotificationDetails(presentSound: false),
+          macOS: DarwinNotificationDetails(presentSound: false),
         ),
       );
     } catch (e) {
@@ -861,6 +883,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
               onlyAlertOnce: true,
               playSound: false,
             ),
+            iOS: const DarwinNotificationDetails(presentSound: false),
+            macOS: const DarwinNotificationDetails(presentSound: false),
           ),
         );
         if (isSavingPaused) {
@@ -882,6 +906,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                 onlyAlertOnce: true,
                 playSound: false,
               ),
+              iOS: const DarwinNotificationDetails(presentSound: false),
+              macOS: const DarwinNotificationDetails(presentSound: false),
             ),
           );
           return;
@@ -933,6 +959,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
             onlyAlertOnce: true,
             playSound: false,
           ),
+          iOS: DarwinNotificationDetails(presentSound: false),
+          macOS: DarwinNotificationDetails(presentSound: false),
         ),
       );
 

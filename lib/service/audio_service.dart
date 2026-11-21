@@ -163,6 +163,8 @@ class AudioService {
   Timer? _trackResyncTimer;
   IndexedAudioSource? _lastHandledCurrentSource;
   int _watchdogStallTicks = 0;
+  Duration _watchdogLastPosition = Duration.zero;
+  AudioSource? _watchdogLastSource;
 
   // Source error / 卡死自动恢复：按 bvid:cid 限流，避免网络持续故障时无限重建音源。
   // 计数在窗口内累加，超过上限后放弃自动恢复，交还用户手动操作。
@@ -539,43 +541,62 @@ class AudioService {
       }
     });
 
-    if (Platform.isIOS) {
-      Timer.periodic(const Duration(seconds: 5), (_) {
-        if (_watchdogUnwedgedSources.isNotEmpty) {
-          final seq = playlist.sequence;
-          _watchdogUnwedgedSources
-              .removeWhere((s) => !seq.any((e) => identical(e, s)));
+    // 播放停滞 watchdog：所有平台通用。
+    // 原实现仅 iOS 且只检测「卡在 0 秒」，但 Android 的 Source error 卡在任意进度、
+    // 桌面端边下边播停滞同样会让播放器永久停在 ready 态。这里统一按「进度不前进」
+    // 判定，覆盖所有位置，并排除未加载/加载中/已结束阶段的正常停滞。
+    Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_watchdogUnwedgedSources.isNotEmpty) {
+        final seq = playlist.sequence;
+        _watchdogUnwedgedSources
+            .removeWhere((s) => !seq.any((e) => identical(e, s)));
+      }
+      // idle/loading/completed 分别是未加载、元数据加载中、播放结束，
+      // 这些阶段的进度停滞属正常；ready/buffering 停滞才是真正的卡死。
+      // 保留 buffering 是为了不破坏 iOS 上「卡在 0 秒」的既有保护。
+      if (!player.playing ||
+          player.processingState == ProcessingState.idle ||
+          player.processingState == ProcessingState.loading ||
+          player.processingState == ProcessingState.completed) {
+        _watchdogStallTicks = 0;
+        return;
+      }
+      final source = player.sequenceState.currentSource;
+      if (source is! LazyAudioSource ||
+          (source.tag as MediaItem?)?.extras?['bvid'] == null) {
+        _watchdogStallTicks = 0;
+        return;
+      }
+      final position = player.position;
+      if (!identical(source, _watchdogLastSource)) {
+        // 刚切换到另一个音源：以新位置为基准重新计数，但不清除 unwedge 保护，
+        // 否则 _replaceCurrentSource 刚插入的新音源会立刻被再次判定为卡死。
+        _watchdogLastSource = source;
+        _watchdogLastPosition = position;
+        _watchdogStallTicks = 0;
+        return;
+      }
+      if (position != _watchdogLastPosition) {
+        // 进度在前进，音源正常。
+        _watchdogLastPosition = position;
+        _watchdogStallTicks = 0;
+        _watchdogUnwedgedSources.remove(source);
+        return;
+      }
+      _watchdogStallTicks++;
+      if (_watchdogStallTicks >= 4 &&
+          !_watchdogUnwedgedSources.contains(source)) {
+        _watchdogStallTicks = 0;
+        final idx = player.currentIndex;
+        _logger.warning(
+            'watchdog: stalled at ${position.inSeconds}s for 20s, '
+            'recovering source at index=$idx');
+        if (idx != null) {
+          // 走与 Source error 相同的限流恢复，避免两条路径叠加超额重建。
+          _recoverCurrentSource(source, reason: 'watchdog stall');
         }
-        if (!player.playing) {
-          _watchdogStallTicks = 0;
-          return;
-        }
-        final source = player.sequenceState.currentSource;
-        final extras = (source?.tag as MediaItem?)?.extras;
-        if (source == null ||
-            extras == null ||
-            source is! LazyAudioSource) {
-          _watchdogStallTicks = 0;
-          return;
-        }
-        if (player.position > Duration.zero) {
-          _watchdogStallTicks = 0;
-          _watchdogUnwedgedSources.remove(source);
-          return;
-        }
-        _watchdogStallTicks++;
-        if (_watchdogStallTicks >= 4 &&
-            !_watchdogUnwedgedSources.contains(source)) {
-          _watchdogStallTicks = 0;
-          final idx = player.currentIndex;
-          _logger.warning(
-              'watchdog: playing but stuck at 0 for 20s, replace source at index=$idx');
-          if (idx != null) {
-            _replaceCurrentSource(source);
-          }
-        }
-      });
-    }
+      }
+    });
   }
 
   void _scheduleTrackResync() {
@@ -601,7 +622,8 @@ class AudioService {
   ///
   /// 重建逻辑本身平台无关（仅操作 playlist 与 player），因此对所有平台开放：
   /// Android 上补上了此前完全缺失的自动恢复；iOS / 桌面端遇到同类错误同样会卡死，
-  /// 这层恢复对它们同样有益，且不改变 watchdog（仍为 iOS 专属）的既有行为。
+  /// 这层恢复对它们同样有益。进度停滞 watchdog 也复用本方法并共享下面的限流配额，
+  /// 避免 Source error 与停滞两条恢复路径叠加导致超额重建。
   /// 按 bvid:cid 限流，避免 CDN 持续故障时无限重建音源。
   Future<void> _recoverCurrentSource(AudioSource source,
       {required String reason}) async {
@@ -861,9 +883,27 @@ class AudioService {
     return true;
   }
 
+  /// 在持锁临界区内定位到指定音源。
+  ///
+  /// seek 会等待目标音源完成加载；当音源卡在边下边播时它可能无法返回，
+  /// 一旦在持锁期间挂起，_hijacking 将永久为 true，后续所有播放列表变更
+  /// 都会排队超时（日志中的 "wait for playlist mutation lock timed out" 风暴）。
+  /// 因此这里加超时兜底，确保 finally 一定能释放锁。
+  Future<void> _seekInCriticalSection(Duration position, {int? index}) async {
+    try {
+      await player
+          .seek(position, index: index)
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      _logger.warning('critical-section seek failed (index=$index): $e');
+    }
+  }
+
   Future<void> playByBvid(String bvid, {int? preferCid}) async {
     _logger.info('Playing by BVID: $bvid (preferCid: $preferCid)');
-    await player.pause();
+    // 不在这里预先 pause：一旦后续加载/等锁失败并提前 return，播放器会被
+    // 永久留在暂停态（用户看到「点歌后停住、不跳转」）。seek 到目标音源后
+    // 末尾的 play() 足以开始播放，无需预先暂停。
     List<IndexedAudioSource>? srcs;
     try {
       srcs = await (await BilibiliService.instance).getAudios(bvid);
@@ -898,7 +938,7 @@ class AudioService {
             _logger.info('Located to part cid=$preferCid at index $i');
           }
         }
-        await player.seek(Duration.zero, index: target);
+        await _seekInCriticalSection(Duration.zero, index: target);
       } finally {
         _hijacking = false;
       }
@@ -908,8 +948,8 @@ class AudioService {
 
   Future<void> playByBvids(List<String> bvids, {int index = 0}) async {
     if (bvids.isEmpty) return;
-    
-    await player.pause();
+
+    // 同样不在开头 pause，避免等锁失败时把播放器留在暂停态。
     if (!await _waitMutationFree()) return;
     _hijacking = true;
     
@@ -949,8 +989,8 @@ class AudioService {
         await playlist.addAll(srcs);
       });
       
-      await player.seek(Duration.zero, index: targetIndex);
-      
+      await _seekInCriticalSection(Duration.zero, index: targetIndex);
+
     } finally {
       _hijacking = false;
     }
@@ -959,7 +999,6 @@ class AudioService {
   }
 
   Future<void> playLocalAudio(String bvid, int cid) async {
-    await player.pause();
     final cachedSource = await DatabaseManager.getLocalAudio(bvid, cid);
     if (cachedSource == null) {
       return;
@@ -971,7 +1010,7 @@ class AudioService {
       if (!await _waitMutationFree()) return;
       _hijacking = true;
       try {
-        await player.seek(Duration.zero, index: idx);
+        await _seekInCriticalSection(Duration.zero, index: idx);
       } finally {
         _hijacking = false;
       }
@@ -997,7 +1036,6 @@ class AudioService {
     _logger.info(
         'Playing ${tracks.length} local tracks from index $index (shuffle=$shuffle)');
     final srcs = tracks.map(LocalMusicService.buildSource).toList();
-    await player.pause();
     if (!await _waitMutationFree()) return;
     _hijacking = true;
     try {
@@ -1006,14 +1044,14 @@ class AudioService {
         await playlist.addAll(srcs);
       });
       if (index >= srcs.length) index = 0;
-      await player.seek(Duration.zero, index: index);
+      await _seekInCriticalSection(Duration.zero, index: index);
       if (index < srcs.length &&
           !identical(player.sequenceState.currentSource, srcs[index])) {
         try {
           await player.processingStateStream
               .firstWhere((s) => s == ProcessingState.ready)
               .timeout(const Duration(seconds: 5));
-          await player.seek(Duration.zero, index: index);
+          await _seekInCriticalSection(Duration.zero, index: index);
         } catch (e) {
           _logger.warning('playLocalTracks retry seek failed: $e');
         }

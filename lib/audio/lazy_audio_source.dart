@@ -397,7 +397,11 @@ class LazyAudioSource extends StreamAudioSource {
 
     int? advertisedSourceLength() {
       final real = sourceLength;
-      if (Platform.isIOS &&
+      // macOS 与 iOS 共用 AVFoundation 播放器，同样通过本地 HTTP 代理消费
+      // StreamAudioSource。moov 前置时若向播放器暴露完整长度（可能数百 MB），
+      // AVPlayer 会一直等待整段数据而无法进入 ready，导致 setAudioSource 超时。
+      // 因此两个 Apple 平台都只通告前 45 秒对应的长度，让播放器先就绪再续播。
+      if ((Platform.isIOS || Platform.isMacOS) &&
           moovFront &&
           real != null &&
           real > advertisedLengthCapBytes) {
